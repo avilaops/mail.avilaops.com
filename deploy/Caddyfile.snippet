@@ -1,0 +1,82 @@
+# ---------------------------------------------------------------------------
+# mail.avilaops.com — incluir no Caddyfile principal do VPS.
+#
+# O Caddy cuida do HTTPS do webmail e da API. O TLS do SMTP (portas 465/587)
+# NAO passa por aqui: o MTA le o certificado direto do disco, emitido pelo
+# certbot com validacao webroot servida no bloco abaixo.
+# ---------------------------------------------------------------------------
+
+mail.avilaops.com {
+	encode zstd gzip
+
+	# Desafio ACME do certbot para o certificado usado pelo SMTP.
+	handle_path /.well-known/acme-challenge/* {
+		root * /var/www/acme/.well-known/acme-challenge
+		file_server
+	}
+
+	# API de provisionamento. O bearer token e validado pela propria API;
+	# o Caddy so encerra o TLS e encaminha.
+	# So /api/v1/* e a API de provisionamento; /api/sessao, /api/mail e
+	# /api/cadastro sao rotas BFF do webmail (Next) e ficam no handle geral.
+	handle /api/v1/* {
+		uri strip_prefix /api
+		reverse_proxy 127.0.0.1:3040
+	}
+
+	# CardDAV/CalDAV (contatos e agenda). Basic auth sobre o TLS daqui;
+	# os well-known sao a descoberta automatica do iOS/macOS (RFC 6764).
+	handle /dav/* {
+		reverse_proxy 127.0.0.1:3040
+	}
+	handle /.well-known/carddav {
+		reverse_proxy 127.0.0.1:3040
+	}
+	handle /.well-known/caldav {
+		reverse_proxy 127.0.0.1:3040
+	}
+
+	# Webmail (Fase 2). Ate subir, responde 503 em vez de 502 do Caddy.
+	handle {
+		respond "Webmail Avila Ops em implantacao." 503
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/mail.avilaops.com.log
+		format json
+	}
+}
+
+# ---------------------------------------------------------------------------
+# MTA-STS: politica que instrui o remetente a exigir TLS ao entregar e-mail.
+#
+# Fica em `mode: none` DE PROPOSITO enquanto o MX de avilaops.com apontar para
+# a Porkbun (fwd1/fwd2.porkbun.com): uma politica `enforce` com `mx:
+# mail.avilaops.com` faria Gmail e Outlook RECUSAREM entrega em avilaops.com
+# por MX fora da lista. So trocar para `enforce` (e publicar o TXT
+# `_mta-sts.avilaops.com "v=STSv1; id=<data>"`) quando o MX vier para ca.
+# Para dominios de CLIENTE a politica e por dominio, no DNS deles — nao aqui.
+# ---------------------------------------------------------------------------
+
+mta-sts.avilaops.com {
+	handle /.well-known/mta-sts.txt {
+		header Content-Type "text/plain; charset=utf-8"
+		respond `version: STSv1
+mode: none
+mx: mail.avilaops.com
+max_age: 604800
+`
+	}
+
+	handle {
+		respond 404
+	}
+}

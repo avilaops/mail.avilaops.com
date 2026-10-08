@@ -1,0 +1,13 @@
+[Unit]
+Description=Avila Mail - copia o certificado renovado pelo Caddy para o MTA
+Documentation=file:///opt/avila-mail/deploy/sincronizar-certificado.sh
+After=caddy.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash /opt/avila-mail/deploy/sincronizar-certificado.sh
+# Precisa de root: le /var/lib/caddy (600 caddy:caddy) e escreve em /etc.
+User=root
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=avila-mail-cert-sync

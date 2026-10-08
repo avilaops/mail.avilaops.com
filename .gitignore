@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.next.codex-old/
+
+# Segredos: chave de cifra do DKIM, token da API, credencial do relay.
+.env
+.env.*
+!.env.example
+
+# Mensagens armazenadas, se alguem rodar com storage relativo em dev.
+blobs/
+storage/

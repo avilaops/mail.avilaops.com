@@ -1,0 +1,56 @@
+[Unit]
+Description=Avila Mail - MTA (SMTP entrada 25, submission 587/465, fila de saida)
+Documentation=file:///opt/avila-mail/README.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=avilamail
+Group=avilamail
+WorkingDirectory=/opt/avila-mail
+EnvironmentFile=/opt/avila-mail/.env.production
+ExecStart=/usr/bin/node dist/mta/index.js
+
+Restart=always
+RestartSec=5
+# Servidor de e-mail que fica em loop de restart nao entrega nada e ainda
+# martela o Postgres; depois de 5 falhas em 2 min o systemd para e alerta.
+StartLimitBurst=5
+StartLimitIntervalSec=120
+
+# Bind na porta 25/465/587 sem rodar como root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Endurecimento: o MTA e o processo mais exposto da stack.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+# W^X foi tentado aqui (MemoryDenyWriteExecute + NODE_OPTIONS sem JIT) e NAO
+# da para manter: sem JIT o V8 tambem desliga o WebAssembly, e no Node 24 o
+# `fetch` (undici) parseia HTTP em WASM. Sem JIT, toda chamada de saida falha
+# com "fetch failed" — cobranca no Mercado Pago, relay de contingencia e
+# geolocalizacao morrem em silencio, e o CLI do Prisma nem migra. O resto do
+# endurecimento (privilegios, namespaces, sistema somente-leitura) continua.
+MemoryDenyWriteExecute=false
+ReadWritePaths=/var/lib/avila-mail
+# Leitura do certificado gerenciado pelo Caddy/certbot.
+ReadOnlyPaths=/etc/letsencrypt
+
+# Teto de memoria: na Fase 1 o VPS e compartilhado com 18 containers.
+MemoryMax=400M
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=avila-mail-mta
+
+[Install]
+WantedBy=multi-user.target

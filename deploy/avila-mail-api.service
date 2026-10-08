@@ -1,0 +1,44 @@
+[Unit]
+Description=Avila Mail - API de provisionamento (consumida pelo portal do cliente e pelo n8n)
+Documentation=file:///opt/avila-mail/README.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=avilamail
+Group=avilamail
+WorkingDirectory=/opt/avila-mail
+EnvironmentFile=/opt/avila-mail/.env.production
+ExecStart=/usr/bin/node dist/api/index.js
+
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+# W^X foi tentado aqui (MemoryDenyWriteExecute + NODE_OPTIONS sem JIT) e NAO
+# da para manter: sem JIT o V8 tambem desliga o WebAssembly, e no Node 24 o
+# `fetch` (undici) parseia HTTP em WASM. Sem JIT, toda chamada de saida falha
+# com "fetch failed" — cobranca no Mercado Pago, relay de contingencia e
+# geolocalizacao morrem em silencio, e o CLI do Prisma nem migra. O resto do
+# endurecimento (privilegios, namespaces, sistema somente-leitura) continua.
+MemoryDenyWriteExecute=false
+ReadWritePaths=/var/lib/avila-mail
+
+MemoryMax=250M
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=avila-mail-api
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,178 @@
+@import "tailwindcss";
+
+/**
+ * Paleta do webmail. Sobria e de alto contraste: o cliente passa horas aqui,
+ * e leitura de e-mail nao pede protagonismo visual da interface.
+ *
+ * O que esta aqui no `@theme` e o tema CLARO. O escuro mora no bloco
+ * `[data-theme="dark"]` mais abaixo e so troca o valor destas mesmas variaveis
+ * — nenhum componente precisa saber qual tema esta no ar.
+ */
+@theme {
+  --color-tinta: #0f1115;
+  --color-tinta-suave: #1a1d24;
+  --color-borda: #e4e6eb;
+  --color-borda-escura: #2a2e37;
+  --color-fundo: #ffffff;
+  --color-fundo-suave: #f7f8fa;
+  --color-realce: #2563eb;
+  --color-atencao: #b45309;
+  --color-perigo: #b91c1c;
+  --color-texto-fraco: #6b7280;
+
+  /*
+   * Superficie de cartao, campo e menu. Era `bg-white` cravado na classe, o que
+   * no tema escuro vira um retangulo branco no meio da tela.
+   */
+  --color-superficie: #ffffff;
+  /* Realce de hover sobre `--color-fundo-suave`. */
+  --color-hover-suave: #ffffff;
+
+  /*
+   * Superficie forte: botao primario, barra do compositor, pasta selecionada.
+   * No claro e quase preta; no escuro nao pode continuar sendo a cor do texto,
+   * senao o botao vira branco com texto branco em cima.
+   */
+  --color-forte: #0f1115;
+  --color-forte-hover: #1a1d24;
+  --color-sobre-forte: #ffffff;
+}
+
+/**
+ * Tema escuro. Quem decide quando ligar e `lib/tema-noturno`: das 18h as 6h,
+ * no relogio de quem esta olhando.
+ */
+:root[data-theme="dark"] {
+  --color-tinta: #e7eaef;
+  --color-tinta-suave: #c9cfd8;
+  --color-borda: #262b34;
+  --color-borda-escura: #39404c;
+  --color-fundo: #0f1216;
+  --color-fundo-suave: #161a20;
+  --color-realce: #5b8cff;
+  --color-atencao: #f0b357;
+  --color-perigo: #f2777a;
+  --color-texto-fraco: #98a1ae;
+
+  --color-superficie: #161a20;
+  --color-hover-suave: #222831;
+
+  /* Azul em vez de branco: botao primario branco no escuro grita na tela. */
+  --color-forte: #3b6cf0;
+  --color-forte-hover: #2f5ae0;
+  --color-sobre-forte: #ffffff;
+
+  /*
+   * As caixas de aviso usam a paleta padrao do Tailwind direto na classe
+   * (`bg-red-50`, `text-emerald-800`...). Como no v4 cada utilitario aponta
+   * para a variavel do tema, trocar a variavel aqui escurece todas de uma vez
+   * sem precisar reescrever nenhuma classe.
+   */
+  --color-red-50: #2a1416;
+  --color-red-100: #3a1a1d;
+  --color-red-200: #52242a;
+  --color-red-900: #ffc9cb;
+  --color-emerald-50: #0e2a1e;
+  --color-emerald-100: #123726;
+  --color-emerald-200: #1c4d36;
+  --color-emerald-300: #27694a;
+  --color-emerald-700: #7fd8a8;
+  --color-emerald-800: #9ae2bd;
+  --color-emerald-900: #b6ecd0;
+  --color-amber-50: #2c2011;
+  --color-amber-100: #3a2a14;
+  --color-amber-200: #55401e;
+  --color-amber-300: #6f5527;
+  --color-blue-50: #12203c;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--color-fundo);
+  color: var(--color-tinta);
+  -webkit-font-smoothing: antialiased;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+}
+
+/**
+ * No iPhone instalado como app, a viewport avanca por tras do indicador de
+ * inicio. O espaco-base preserva o ritmo no desktop; o inseto do iOS sobe o
+ * rodape apenas quando existe uma area fisicamente ocupada.
+ */
+.rodape-seguro {
+  padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px));
+}
+
+/**
+ * O mesmo vale para o topo: com `viewport-fit=cover` e barra de status
+ * translucida, a primeira linha da tela nasce por baixo do relogio e da
+ * bateria. Sem isto, a seta de voltar e a lixeira do leitor ficavam
+ * exatamente atras dos indicadores do iOS, e ninguem conseguia toca-los.
+ */
+.topo-seguro {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* Barra de rolagem discreta nas colunas. */
+.rolagem-fina {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd0d8 transparent;
+}
+.rolagem-fina::-webkit-scrollbar {
+  width: 8px;
+}
+.rolagem-fina::-webkit-scrollbar-thumb {
+  background: #cbd0d8;
+  border-radius: 4px;
+}
+
+:root[data-theme="dark"] .rolagem-fina {
+  scrollbar-color: #3b414c transparent;
+}
+:root[data-theme="dark"] .rolagem-fina::-webkit-scrollbar-thumb {
+  background: #3b414c;
+}
+
+/**
+ * Botao do tema. Fica discreto: o padrao e o horario decidir, e este botao e
+ * so a saida para quem quer o contrario agora.
+ */
+.botao-tema {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  position: relative;
+  place-items: center;
+  border: 1px solid var(--color-borda);
+  border-radius: 8px;
+  background: var(--color-superficie);
+  color: var(--color-texto-fraco);
+  cursor: pointer;
+  font-size: 0.95rem;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.botao-tema:hover {
+  border-color: var(--color-realce);
+  color: var(--color-tinta);
+}
+
+/* Aviso de que o automatico esta suspenso ate a proxima virada. */
+.botao-tema:not([data-modo="auto"])::after {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-realce);
+  content: "";
+}

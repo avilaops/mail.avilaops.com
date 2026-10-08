@@ -1,0 +1,55 @@
+{
+  "name": "Ávila Ops — E-mail",
+  "short_name": "Ávila Mail",
+  "description": "Caixa de e-mail profissional da Ávila Ops: ler, escrever e organizar no navegador ou no celular.",
+  "id": "/caixa",
+  "start_url": "/caixa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f1216",
+  "theme_color": "#0f1115",
+  "lang": "pt-BR",
+  "dir": "ltr",
+  "categories": [
+    "productivity",
+    "business"
+  ],
+  "icons": [
+    {
+      "src": "/web-app-manifest-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/web-app-manifest-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/web-app-manifest-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Escrever mensagem",
+      "short_name": "Escrever",
+      "url": "/caixa?escrever=1"
+    },
+    {
+      "name": "Configurar no celular",
+      "short_name": "Configurar",
+      "url": "/configurar"
+    }
+  ]
+}

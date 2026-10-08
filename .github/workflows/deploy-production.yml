@@ -1,0 +1,79 @@
+name: Build e deploy
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm test
+  api:
+    needs: verify
+    permissions:
+      contents: read
+      packages: write
+    uses: avilaops/infra/.github/workflows/container.yml@5de9dd168d6db14764d9ca9a9338f72929652eb5
+    with:
+      context: .
+      dockerfile: Dockerfile
+      image-suffix: '-api'
+      publish: ${{ github.event_name != 'pull_request' }}
+  webmail:
+    needs: verify
+    permissions:
+      contents: read
+      packages: write
+    uses: avilaops/infra/.github/workflows/container.yml@5de9dd168d6db14764d9ca9a9338f72929652eb5
+    with:
+      context: webmail
+      dockerfile: webmail/Dockerfile
+      image-suffix: '-webmail'
+      publish: ${{ github.event_name != 'pull_request' }}
+  deploy_api:
+    needs: [api, webmail]
+    if: github.event_name != 'pull_request' && vars.DEPLOY_ENABLED == 'true'
+    permissions:
+      contents: read
+      packages: read
+    uses: avilaops/infra/.github/workflows/deploy-ssh.yml@5de9dd168d6db14764d9ca9a9338f72929652eb5
+    with:
+      application: mail.avilaops.com
+      image: ${{ needs.api.outputs.image }}
+    secrets:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+  deploy_webmail:
+    needs: [webmail, deploy_api]
+    if: github.event_name != 'pull_request' && vars.DEPLOY_ENABLED == 'true'
+    permissions:
+      contents: read
+      packages: read
+    uses: avilaops/infra/.github/workflows/deploy-ssh.yml@5de9dd168d6db14764d9ca9a9338f72929652eb5
+    with:
+      application: webmail.avilaops.com
+      image: ${{ needs.webmail.outputs.image }}
+    secrets:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_WEBMAIL_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}

@@ -1,0 +1,59 @@
+name: Merge automático
+# O PR entra na main sozinho, mas só depois de o build dele passar.
+#
+# Esperar o build é o que impede um PR que não compila de entrar: em 08/10/2026,
+# no lojas, um PR mesclado na hora da abertura deixou a main uma hora sem publicar.
+#
+# O build de pull request roda sobre o resultado do merge com a main
+# (`refs/pull/N/merge`), então pega justamente esse caso: dois PRs que juntam
+# sem conflito e não compilam juntos.
+on:
+  workflow_run:
+    workflows: ["Build e deploy"]
+    types: [completed]
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+# Um merge por vez: dois PRs abertos juntos não disputam a main.
+concurrency:
+  group: merge-automatico
+  cancel-in-progress: false
+jobs:
+  merge:
+    # Só build de pull request que passou. PR de fork fica de fora: o GitHub não
+    # preenche `pull_requests` para ele, e código de fora não entra na main sem
+    # ninguém olhar.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.pull_requests[0].number != null
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PR: ${{ github.event.workflow_run.pull_requests[0].number }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      # Rascunho espera virar "pronto" (e um novo push para o build rodar de
+      # novo). `--match-head-commit` recusa o merge se a branch andou depois do
+      # build: o que entra na main é exatamente o commit que foi construído.
+      # PR com conflito falha aqui e fica aberto.
+      - name: Juntar na main e apagar a branch
+        run: |
+          set -euo pipefail
+          estado=$(gh pr view "$PR" --json state,isDraft --jq '.state + " " + (.isDraft | tostring)')
+          if [[ "$estado" != "OPEN false" ]]; then
+            echo "PR #$PR não está aberto e pronto ($estado); nada a fazer."
+            exit 0
+          fi
+          gh pr merge "$PR" --squash --delete-branch --match-head-commit "$SHA"
+          echo "MESCLADO=1" >> "$GITHUB_ENV"
+      # Merge feito com o token do próprio workflow não gera o evento `push`
+      # que publicaria a main (regra do GitHub, para um workflow não disparar
+      # outro em cadeia). `workflow_dispatch` é a exceção, então o deploy é
+      # chamado à mão daqui.
+      - name: Publicar a main
+        if: env.MESCLADO == '1'
+        run: gh workflow run deploy-production.yml --ref "${{ github.event.repository.default_branch }}"

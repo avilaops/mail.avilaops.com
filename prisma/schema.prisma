@@ -1,0 +1,792 @@
+// avila-mail — banco dedicado do servidor de e-mail proprio.
+//
+// Separacao de responsabilidade proposital:
+//   - Este banco e dono do CONTEUDO (dominios tecnicos, caixas, mensagens, fila).
+//   - o portal do cliente continua dono do registro COMERCIAL (quem contratou,
+//     quem paga, qual plano) nos models EmailDomain/Mailbox do portal.
+//   - A ponte entre os dois e a API de provisionamento (src/api), consumida
+//     pelo emailProvider.ts do portal. Nenhum dos dois le a tabela do outro.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("MAIL_DATABASE_URL")
+}
+
+/// Dominio tecnico hospedado no servidor (ex.: avilaops.com, clientex.com.br).
+model MailDomain {
+  id        String  @id @default(cuid())
+  name      String  @unique
+  /// Id do cliente no portal (portal_clients.id). Referencia fraca, sem FK entre bancos.
+  clientRef String? @map("client_ref")
+
+  /// pending_dns | active | suspended | disabled
+  status String @default("pending_dns")
+
+  /// Seletor DKIM publicado no DNS (avila._domainkey.<dominio>).
+  dkimSelector   String  @default("avila") @map("dkim_selector")
+  /// Chave privada DKIM cifrada em repouso (AES-256-GCM, ver src/lib/crypto.ts).
+  dkimPrivateKey String? @map("dkim_private_key") @db.Text
+  /// Chave publica em base64, ja no formato do registro TXT.
+  dkimPublicKey  String? @map("dkim_public_key") @db.Text
+
+  /// Resultado da ultima verificacao de DNS (mx, spf, dkim, dmarc).
+  dnsCheck     Json?     @map("dns_check")
+  dnsCheckedAt DateTime? @map("dns_checked_at")
+
+  /// Caixa que recebe tudo que nao casa com nenhuma caixa/alias.
+  catchAllMailboxId String? @map("catch_all_mailbox_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  mailboxes Mailbox[]
+  aliases   MailAlias[]
+  events    MailEvent[]
+
+  @@index([status])
+  @@map("mail_domains")
+}
+
+/// Caixa postal — a unidade cobrada (R$ 10/mes).
+model Mailbox {
+  id        String @id @default(cuid())
+  domainId  String @map("domain_id")
+  /// Parte antes do @, sempre minuscula.
+  localPart String @map("local_part")
+
+  passwordHash String  @map("password_hash")
+  displayName  String? @map("display_name")
+
+  quotaBytes BigInt @default(5368709120) @map("quota_bytes")
+  usedBytes  BigInt @default(0) @map("used_bytes")
+
+  /// active | suspended | provisioning
+  status String @default("provisioning")
+
+  /// Trava anti-abuso: destinatarios por hora.
+  sendLimitPerHour Int @default(200) @map("send_limit_per_hour")
+
+  /// Freio de novato: enquanto esta data nao passa, a caixa nasceu no
+  /// self-service e envia pouco. Quem compra e-mail para disparar spam some
+  /// antes de a rampa acabar, e a reputacao do IP e de todos os clientes.
+  probationUntil DateTime? @map("probation_until")
+
+  /// Endereco externo para recuperacao de senha. Sem ele, so o admin reseta.
+  recoveryEmail String? @map("recovery_email")
+
+  /// Dono no SSO (e-mail da conta em auth.avilaops.com). Uma conta pode ter
+  /// caixas em varios dominios; e por aqui que o webmail sabe quais abrir.
+  ownerEmail String? @map("owner_email")
+
+  /// Forca a troca da senha no primeiro acesso. Nasce true quando criamos a
+  /// caixa com senha gerada; some quando o dono define a dele. Enquanto true,
+  /// a API recusa tudo menos definir a senha nova.
+  mustChangePassword Boolean @default(false) @map("must_change_password")
+
+  /// Verificacao em duas etapas (TOTP) — protege o WEBMAIL; IMAP/POP3/SMTP
+  /// continuam na senha, que e o que os aplicativos sabem falar.
+  /// Segredo cifrado (AES-256-GCM); preenchido no setup, valendo so quando
+  /// `totpEnabledAt` e marcado apos o dono provar um codigo.
+  totpSecret        String?   @map("totp_secret")
+  totpEnabledAt     DateTime? @map("totp_enabled_at")
+  /// Ultimo contador TOTP aceito — anti-replay: codigo interceptado nao vale
+  /// uma segunda vez dentro da mesma janela.
+  totpLastCounter   Int?      @map("totp_last_counter")
+  /// Hashes sha256 dos codigos de recuperacao ainda nao usados.
+  totpRecoveryCodes Json?     @map("totp_recovery_codes")
+
+  lastLoginAt DateTime? @map("last_login_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  domain           MailDomain             @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  folders          MailFolder[]
+  messages         Message[]
+  outbound         OutboundMessage[]
+  events           MailEvent[]
+  sessions         MailSession[]
+  settings         MailboxSettings?
+  autoReplies      AutoReplyLog[]
+  uploads          PendingAttachment[]
+  resetTokens      PasswordResetToken[]
+  migrations       MailMigration[]
+  rules            MailboxRule[]
+  senderReputation MailSenderReputation[]
+  davItems         MailDavItem[]
+  apiKeys          MailApiKey[]
+  push             MailPushSubscription[]
+
+  /// Sequencias de sincronizacao DAV, uma por colecao. Cada mudanca bumpa a
+  /// da colecao; o valor corrente e o ctag/sync-token que o cliente guarda.
+  davContactsSeq BigInt @default(0) @map("dav_contacts_seq")
+  davCalendarSeq BigInt @default(0) @map("dav_calendar_seq")
+
+  @@unique([domainId, localPart])
+  @@index([status])
+  @@index([ownerEmail])
+  @@map("mail_mailboxes")
+}
+
+/// Regra de triagem do dono da caixa: "quando chegar mensagem assim, faca isto".
+/// Avaliada na entrega, antes de gravar — a primeira regra que casa decide, na
+/// ordem de `position`. Spam nao passa por regra: a quarentena vence sempre.
+model MailboxRule {
+  id        String  @id @default(cuid())
+  mailboxId String  @map("mailbox_id")
+  name      String
+  position  Int     @default(0)
+  enabled   Boolean @default(true)
+
+  /// "all" (todas as condicoes) ou "any" (qualquer uma).
+  match      String @default("all")
+  /// [{ field: "from"|"to"|"subject"|"has_attachment", contains?: string }]
+  conditions Json
+  /// { folderId?: string, markRead?: boolean, star?: boolean }
+  actions    Json
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@index([mailboxId, position])
+  @@map("mailbox_rules")
+}
+
+/// Assinatura de Web Push de um navegador/aparelho do dono da caixa.
+///
+/// Guarda o que o navegador devolveu na inscricao: o endpoint do servico de
+/// push (Google, Mozilla, Apple) e as duas chaves com que a mensagem e cifrada
+/// de ponta a ponta. O servidor NAO consegue ler o que envia depois de cifrar,
+/// e o servico de push nao consegue ler o conteudo — so entrega o pacote.
+///
+/// Assinatura morta (404/410 do servico) e apagada na hora do envio: navegador
+/// desinstalado ou permissao revogada nao pode virar fila de erro eterna.
+model MailPushSubscription {
+  id        String @id @default(cuid())
+  mailboxId String @map("mailbox_id")
+
+  endpoint String @unique @db.Text
+  p256dh   String
+  auth     String
+
+  userAgent String? @map("user_agent") @db.VarChar(300)
+
+  lastSentAt DateTime? @map("last_sent_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@index([mailboxId])
+  @@map("mail_push_subscriptions")
+}
+
+/// Chave de API criada pelo dono na area de desenvolvedor do webmail.
+///
+/// Guarda so o hash: o valor em claro aparece UMA vez, na criacao. Escopo
+/// `mailbox` age como o dono (rotas /v1/me); `provisioning` cria dominio e
+/// caixa (rotas de provisionamento) e so nasce de uma caixa administradora.
+/// Revogar e marcar `revokedAt` — a linha fica para o historico.
+model MailApiKey {
+  id        String @id @default(cuid())
+  mailboxId String @map("mailbox_id")
+  /// mailbox | provisioning
+  scope     String @default("mailbox")
+  name      String
+  /// Inicio do token (ate o segundo "_" + 6 chars), para reconhecer na lista.
+  prefix    String
+  tokenHash String @unique @map("token_hash")
+
+  lastUsedAt DateTime? @map("last_used_at")
+  revokedAt  DateTime? @map("revoked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@index([mailboxId])
+  @@map("mail_api_keys")
+}
+
+/// Sessao do dono da caixa no webmail.
+///
+/// O access token e um JWT curto e sem estado; o refresh vive aqui para que
+/// "encerrar sessao" e "desconectar todos os dispositivos" sejam de verdade —
+/// JWT puro nao tem como ser revogado antes de expirar.
+model MailSession {
+  id        String @id @default(cuid())
+  mailboxId String @map("mailbox_id")
+
+  /// SHA-256 do refresh token. O valor em claro so existe no cliente.
+  refreshHash String @unique @map("refresh_hash")
+
+  userAgent String? @map("user_agent") @db.VarChar(300)
+  ip        String? @db.VarChar(60)
+  /// Cidade/pais do IP no momento do login (ipwho.is). Resolvido uma vez e
+  /// guardado: a tela de aparelhos nao chama servico externo a cada abertura.
+  location  String? @db.VarChar(120)
+
+  expiresAt  DateTime  @map("expires_at")
+  revokedAt  DateTime? @map("revoked_at")
+  lastUsedAt DateTime  @default(now()) @map("last_used_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@index([mailboxId, expiresAt])
+  @@map("mail_sessions")
+}
+
+/// Tentativas de login por janela, para travar forca bruta.
+/// Chaveado por endereco E por IP: bloquear so por conta deixa o atacante
+/// varrer varias caixas; bloquear so por IP pune escritorio com IP compartilhado.
+model LoginAttempt {
+  id          String   @id @default(cuid())
+  identifier  String
+  windowStart DateTime @map("window_start")
+  failures    Int      @default(0)
+
+  @@unique([identifier, windowStart])
+  @@index([windowStart])
+  @@map("mail_login_attempts")
+}
+
+/// Item de uma colecao DAV da caixa: contato (vCard) ou compromisso
+/// (iCalendar) — o que o CardDAV/CalDAV serve ao celular e ao desktop.
+///
+/// Excluir nao apaga a linha: vira lapide (`deletedAt`) com `seq` novo, porque
+/// o sync-collection precisa contar ao cliente O QUE sumiu — apagar de verdade
+/// faria o contato excluido num aparelho reaparecer no outro.
+model MailDavItem {
+  id         String @id @default(cuid())
+  mailboxId  String @map("mailbox_id")
+  /// contacts | calendar
+  collection String
+  /// Nome do recurso na URL (ex.: `ab12.vcf`), escolhido pelo cliente no PUT.
+  href       String
+  uid        String
+  etag       String
+  /// vCard ou iCalendar bruto, exatamente como o cliente enviou.
+  data       String @db.Text
+
+  /// FN do vCard ou SUMMARY do VEVENT — listagem sem abrir o blob.
+  displayName String?   @map("display_name")
+  /// Janela do VEVENT, para o filtro time-range do calendar-query.
+  dtStart     DateTime? @map("dt_start")
+  dtEnd       DateTime? @map("dt_end")
+  /// VEVENT com RRULE entra em qualquer time-range (superconjunto seguro).
+  recurring   Boolean   @default(false)
+
+  /// Posicao na sequencia de sincronizacao da colecao (Mailbox.dav*Seq).
+  seq       BigInt
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@unique([mailboxId, collection, href])
+  @@index([mailboxId, collection, seq])
+  @@map("mail_dav_items")
+}
+
+/// Reputacao de remetente POR CAIXA, aprendida dos botoes "e spam" e "nao e
+/// spam". A decisao mais recente do dono vence — mudar de ideia e um clique.
+/// E o treino do anti-spam: deterministico e explicavel ("voce marcou este
+/// remetente"), em vez de um modelo opaco que ninguem consegue defender no
+/// suporte.
+model MailSenderReputation {
+  id            String   @id @default(cuid())
+  mailboxId     String   @map("mailbox_id")
+  senderAddress String   @map("sender_address")
+  /// block | trust
+  verdict       String
+  /// Quantas vezes o dono reforcou a decisao (qualquer direcao).
+  reports       Int      @default(1)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@unique([mailboxId, senderAddress])
+  @@map("mail_sender_reputation")
+}
+
+/// Encaminhamento simples (contato@ → caixa existente ou endereco externo).
+model MailAlias {
+  id          String   @id @default(cuid())
+  domainId    String   @map("domain_id")
+  localPart   String   @map("local_part")
+  destination String
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  domain MailDomain @relation(fields: [domainId], references: [id], onDelete: Cascade)
+
+  @@unique([domainId, localPart])
+  @@map("mail_aliases")
+}
+
+/// Pasta da caixa. As quatro primeiras sao criadas junto com a caixa.
+model MailFolder {
+  id        String @id @default(cuid())
+  mailboxId String @map("mailbox_id")
+  name      String
+  /// inbox | sent | drafts | trash | spam | archive | custom
+  kind      String @default("custom")
+
+  /// UIDVALIDITY do IMAP. Se este numero mudar, o cliente joga fora o cache
+  /// local e rebaixa a pasta inteira — por isso ele so muda se a pasta for
+  /// recriada do zero. Nasce com o instante da criacao, em segundos.
+  uidValidity Int @default(1) @map("uid_validity")
+  /// Proximo UID a ser entregue nesta pasta. So cresce, nunca reaproveita:
+  /// UID repetido faz o cliente exibir a mensagem errada.
+  uidNext     Int @default(1) @map("uid_next")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  mailbox  Mailbox   @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@unique([mailboxId, name])
+  @@map("mail_folders")
+}
+
+/// Mensagem recebida ou enviada, ja indexada.
+/// O .eml bruto (fonte da verdade) fica em disco; aqui ficam metadados e corpo.
+model Message {
+  id        String @id @default(cuid())
+  mailboxId String @map("mailbox_id")
+  folderId  String @map("folder_id")
+
+  /// Message-ID do RFC 5322, usado para deduplicar e montar thread.
+  rfcMessageId String? @map("rfc_message_id")
+  inReplyTo    String? @map("in_reply_to")
+  /// Chave de agrupamento de conversa (normalizada do assunto + references).
+  threadKey    String? @map("thread_key")
+
+  fromAddress String  @map("from_address")
+  fromName    String? @map("from_name")
+  /// Arrays de {address, name}.
+  toAddresses Json    @default("[]") @map("to_addresses")
+  ccAddresses Json    @default("[]") @map("cc_addresses")
+  replyTo     Json    @default("[]") @map("reply_to")
+
+  subject  String?
+  /// Primeiros 320 caracteres do texto, para a listagem.
+  snippet  String? @db.VarChar(320)
+  bodyText String? @map("body_text") @db.Text
+  bodyHtml String? @map("body_html") @db.Text
+
+  sizeBytes  Int    @map("size_bytes")
+  /// Caminho relativo do .eml.gz dentro de MAIL_STORAGE_DIR.
+  storageKey String @map("storage_key")
+
+  /// Flag \Deleted do IMAP: "marcada para remover", nao "removida".
+  ///
+  /// No IMAP, apagar tem dois tempos — o cliente marca com \Deleted e so o
+  /// EXPUNGE (ou o CLOSE) executa. Mover a mensagem na hora da marcacao quebra
+  /// a sequencia da sessao, impede desmarcar com -FLAGS e faz o cliente exibir
+  /// mensagem fantasma.
+  deleted  Boolean @default(false)
+  seen     Boolean @default(false)
+  flagged  Boolean @default(false)
+  answered Boolean @default(false)
+  draft    Boolean @default(false)
+
+  /// Resultado do mailauth: {spf, dkim, dmarc, arc}.
+  authResult       Json?   @map("auth_result")
+  spamScore        Float?  @map("spam_score")
+  /// Motivo da quarentena, quando aplicavel.
+  quarantineReason String? @map("quarantine_reason")
+
+  hasAttachments Boolean @default(false) @map("has_attachments")
+
+  /// UID do IMAP, unico e crescente DENTRO da pasta. Mover a mensagem para
+  /// outra pasta gera um UID novo la, como o protocolo exige.
+  uid Int @default(0)
+
+  receivedAt DateTime @default(now()) @map("received_at")
+  /// Inicio da permanencia na lixeira, independente da data de recebimento.
+  trashedAt DateTime? @map("trashed_at")
+
+  /// Quando a mensagem adiada volta para a Entrada. Nulo quando nao esta
+  /// adiada. O varredor do MTA usa este campo como agenda, do mesmo jeito que
+  /// nextAttemptAt agenda a fila de saida.
+  snoozedUntil DateTime? @map("snoozed_until")
+
+  mailbox     Mailbox      @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  folder      MailFolder   @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  attachments Attachment[]
+
+  @@unique([folderId, uid])
+  @@index([mailboxId, folderId, receivedAt(sort: Desc)])
+  @@index([mailboxId, folderId, trashedAt])
+  @@index([mailboxId, seen])
+  @@index([mailboxId, threadKey])
+  @@index([mailboxId, rfcMessageId])
+  /// O varredor do MTA busca por snoozedUntil <= agora a cada 10s; sem indice
+  /// isso vira varredura da tabela inteira de mensagens a cada tique.
+  @@index([snoozedUntil])
+  @@map("mail_messages")
+}
+
+/// Metadado de anexo. O binario e extraido do .eml sob demanda.
+model Attachment {
+  id          String  @id @default(cuid())
+  messageId   String  @map("message_id")
+  filename    String?
+  contentType String  @default("application/octet-stream") @map("content_type")
+  sizeBytes   Int     @map("size_bytes")
+  contentId   String? @map("content_id")
+  /// Indice da parte MIME dentro do .eml, para extracao direta.
+  partIndex   Int     @map("part_index")
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@map("mail_attachments")
+}
+
+/// Fila de saida. Toda mensagem enviada passa por aqui antes de sair.
+model OutboundMessage {
+  id        String  @id @default(cuid())
+  mailboxId String? @map("mailbox_id")
+
+  envelopeFrom String  @map("envelope_from")
+  /// Lista de destinatarios do envelope (RCPT TO).
+  recipients   Json
+  subject      String?
+
+  /// .eml.gz ja assinado com DKIM.
+  storageKey String @map("storage_key")
+  sizeBytes  Int    @map("size_bytes")
+
+  /// queued | sending | sent | deferred | failed
+  status   String @default("queued")
+  attempts Int    @default(0)
+
+  /// Destinatarios de fora dos nossos dominios. E o que o aquecimento de IP
+  /// conta — entrega interna nao gasta reputacao do IP.
+  externalRecipients Int @default(0) @map("external_recipients")
+
+  /// direct | smtp | n8n — qual driver entregou (ou tentou).
+  relayDriver String? @map("relay_driver")
+  lastError   String? @map("last_error") @db.Text
+
+  nextAttemptAt DateTime  @default(now()) @map("next_attempt_at")
+  sentAt        DateTime? @map("sent_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  /// Quando o remetente foi avisado da falha (DSN). Nulo enquanto nao houve
+  /// aviso; serve para nao mandar o mesmo bounce duas vezes e para o suporte
+  /// responder "o cliente chegou a ser avisado?" sem depender de log.
+  bouncedAt DateTime? @map("bounced_at")
+
+  mailbox Mailbox? @relation(fields: [mailboxId], references: [id], onDelete: SetNull)
+
+  @@index([status, nextAttemptAt])
+  @@index([mailboxId, createdAt(sort: Desc)])
+  @@index([sentAt])
+  @@map("mail_outbound")
+}
+
+/// Migracao de uma caixa de outro provedor (Zoho, Titan, Gmail) para ca.
+///
+/// Existe como tabela, e nao como tarefa em memoria, porque uma caixa de 5 GB
+/// leva horas: o processo precisa sobreviver a um restart do servico e o
+/// cliente precisa ver o andamento sem ficar com a aba aberta.
+model MailMigration {
+  id        String @id @default(cuid())
+  mailboxId String @map("mailbox_id")
+
+  /// Servidor de origem (imap.gmail.com, imappro.zoho.com...).
+  sourceHost String @map("source_host")
+  sourcePort Int    @default(993) @map("source_port")
+  sourceUser String @map("source_user")
+
+  /// Senha do provedor antigo, cifrada em repouso e APAGADA no fim.
+  /// Guardar em claro seria entregar a caixa antiga inteira a quem ler o banco;
+  /// guardar para sempre seria guardar sem motivo, ja que so serve durante a
+  /// copia.
+  sourceSecret String? @map("source_secret") @db.Text
+
+  /// pendente | copiando | concluida | falhou | cancelada
+  status String @default("pendente")
+
+  /// Contadores de andamento, para a tela do cliente.
+  totalMessages   Int    @default(0) @map("total_messages")
+  copiedMessages  Int    @default(0) @map("copied_messages")
+  skippedMessages Int    @default(0) @map("skipped_messages")
+  copiedBytes     BigInt @default(0) @map("copied_bytes")
+
+  /// Pasta que esta sendo copiada agora — vira texto na tela ("Enviados").
+  currentFolder String? @map("current_folder")
+
+  lastError String? @map("last_error") @db.Text
+
+  startedAt  DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([mailboxId, createdAt(sort: Desc)])
+  @@map("mail_migrations")
+}
+
+/// Trilha de auditoria e operacao (provisionamento, suspensao, rejeicao, bounce).
+model MailEvent {
+  id        String  @id @default(cuid())
+  domainId  String? @map("domain_id")
+  mailboxId String? @map("mailbox_id")
+
+  /// domain.created | mailbox.created | mailbox.suspended | inbound.rejected |
+  /// outbound.failed | quota.exceeded | dns.verified | auth.failed
+  type     String
+  severity String @default("info")
+  payload  Json   @default("{}")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  domain  MailDomain? @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  mailbox Mailbox?    @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@index([type, createdAt(sort: Desc)])
+  @@index([domainId, createdAt(sort: Desc)])
+  @@map("mail_events")
+}
+
+/// Preferencias do dono da caixa. Uma linha por caixa, criada sob demanda.
+model MailboxSettings {
+  id        String @id @default(cuid())
+  mailboxId String @unique @map("mailbox_id")
+
+  signatureHtml String? @map("signature_html") @db.Text
+  signatureText String? @map("signature_text") @db.Text
+
+  autoReplyEnabled Boolean   @default(false) @map("auto_reply_enabled")
+  autoReplySubject String?   @map("auto_reply_subject")
+  autoReplyBody    String?   @map("auto_reply_body") @db.Text
+  /// Data de volta. Passou disso, a resposta automatica para sozinha.
+  autoReplyUntil   DateTime? @map("auto_reply_until")
+
+  /// Aviso de mensagem nova (push e balao). Alerta de seguranca ignora isto:
+  /// conta invadida nao pode depender de o dono ter deixado o aviso ligado.
+  notifyEnabled    Boolean @default(true) @map("notify_enabled")
+  /// Silencio noturno, em hora local da operacao (America/Sao_Paulo).
+  /// Ex.: 22 e 7 = nao avisa das 22h as 7h. Nulos = sem silencio.
+  notifyQuietStart Int?    @map("notify_quiet_start")
+  notifyQuietEnd   Int?    @map("notify_quiet_end")
+  /// Avisar so o que caiu na Entrada: o que uma regra mandou para outra pasta
+  /// foi arquivado de proposito e nao precisa interromper ninguem.
+  notifyOnlyInbox  Boolean @default(true) @map("notify_only_inbox")
+
+  /// Padrao false: imagem remota e o rastreador de leitura mais comum.
+  showRemoteImages Boolean @default(false) @map("show_remote_images")
+  messagesPerPage  Int     @default(30) @map("messages_per_page")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@map("mail_mailbox_settings")
+}
+
+/// Quem ja recebeu resposta automatica, para nao responder duas vezes.
+/// Sem isso, duas caixas em ferias entram em pingue-pongue infinito.
+model AutoReplyLog {
+  id        String   @id @default(cuid())
+  mailboxId String   @map("mailbox_id")
+  sender    String
+  sentAt    DateTime @default(now()) @map("sent_at")
+
+  mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@unique([mailboxId, sender])
+  @@index([sentAt])
+  @@map("mail_auto_reply_log")
+}
+
+/// Anexo enviado antes da mensagem, para o cliente ver barra de progresso.
+/// Some sozinho depois de 24h se a mensagem nunca for enviada.
+model PendingAttachment {
+  id          String   @id @default(cuid())
+  mailboxId   String   @map("mailbox_id")
+  filename    String
+  contentType String   @map("content_type")
+  sizeBytes   Int      @map("size_bytes")
+  storageKey  String   @map("storage_key")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@index([mailboxId, createdAt])
+  @@map("mail_pending_attachments")
+}
+
+/// Token de recuperacao de senha. Guardado como hash: quem ler o banco nao
+/// consegue usar o token, mesma logica da senha.
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  mailboxId String    @map("mailbox_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@index([mailboxId])
+  @@map("mail_password_reset_tokens")
+}
+
+/// Conta de cobranca de um cliente — uma assinatura no Mercado Pago.
+///
+/// O cliente assina UMA vez e o valor acompanha o numero de caixas: contratou
+/// a terceira, o valor sobe para R$ 30 na proxima cobranca. Uma assinatura por
+/// caixa encheria a fatura do cliente de linhas de R$ 10 e multiplicaria a
+/// taxa fixa do gateway.
+model BillingAccount {
+  id String @id @default(cuid())
+
+  /// Id do cliente no portal (portal_clients.id). Referencia fraca entre bancos.
+  clientRef String @unique @map("client_ref")
+
+  /// E-mail do pagador no Mercado Pago.
+  payerEmail String  @map("payer_email")
+  payerName  String? @map("payer_name")
+
+  /// Id da assinatura (preapproval) no Mercado Pago.
+  preapprovalId String? @unique @map("preapproval_id")
+  /// Link para o cliente cadastrar o cartao na pagina do MP.
+  initPoint     String? @map("init_point") @db.Text
+
+  /// pending_card | authorized | paused | cancelled
+  status String @default("pending_card")
+
+  /// Preco por caixa, em centavos. Guardado aqui para o cliente antigo manter
+  /// o preco antigo se a tabela mudar.
+  unitPriceCents Int @default(1000) @map("unit_price_cents")
+  mailboxCount   Int @default(0) @map("mailbox_count")
+  amountCents    Int @default(0) @map("amount_cents")
+
+  nextChargeAt   DateTime? @map("next_charge_at")
+  lastPaymentAt  DateTime? @map("last_payment_at")
+  /// Cobrancas recusadas seguidas. Zera a cada pagamento aprovado.
+  failedAttempts Int       @default(0) @map("failed_attempts")
+  suspendedAt    DateTime? @map("suspended_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  payments BillingPayment[]
+  events   BillingEvent[]
+
+  @@index([status])
+  @@map("mail_billing_accounts")
+}
+
+/// Cobranca recebida (ou recusada) de uma assinatura.
+model BillingPayment {
+  id        String @id @default(cuid())
+  accountId String @map("account_id")
+
+  /// Id do pagamento no Mercado Pago. Unico: sustenta a idempotencia.
+  externalId String @unique @map("external_id")
+
+  amountCents  Int     @map("amount_cents")
+  /// approved | rejected | pending | refunded | cancelled
+  status       String
+  statusDetail String? @map("status_detail")
+
+  paidAt    DateTime? @map("paid_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  account BillingAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, createdAt(sort: Desc)])
+  @@map("mail_billing_payments")
+}
+
+/// Notificacao recebida do Mercado Pago.
+///
+/// Guardada ANTES de processar e com `notificationId` unico: o MP reenvia a
+/// mesma notificacao quando nao recebe 200 rapido, e sem isso o mesmo
+/// pagamento entraria duas vezes.
+model BillingEvent {
+  id        String  @id @default(cuid())
+  accountId String? @map("account_id")
+
+  /// Chave de deduplicacao: topico + id do recurso notificado.
+  notificationId String  @unique @map("notification_id")
+  topic          String
+  action         String?
+  payload        Json    @default("{}")
+
+  processedAt DateTime? @map("processed_at")
+  error       String?   @db.Text
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  account BillingAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  @@index([topic, createdAt(sort: Desc)])
+  @@map("mail_billing_events")
+}
+
+/// Contador de envio por caixa, por janela de hora. Sustenta o rate limit.
+model SendCounter {
+  id          String   @id @default(cuid())
+  mailboxId   String   @map("mailbox_id")
+  /// Inicio da janela de 1 hora (truncado).
+  windowStart DateTime @map("window_start")
+  recipients  Int      @default(0)
+
+  @@unique([mailboxId, windowStart])
+  @@map("mail_send_counters")
+}
+
+/// Pedido de cadastro self-service.
+///
+/// Existe ANTES do dominio e da caixa: e o que permite cobrar primeiro e
+/// provisionar depois. Aberto ao publico, a ordem inversa daria caixa de graca
+/// para qualquer um.
+model MailSignup {
+  id String @id @default(cuid())
+
+  /// Token opaco que o navegador carrega para consultar o proprio pedido.
+  /// Nao usamos o id: quem descobre um id nao pode ler o pedido dos outros.
+  token String @unique
+
+  domain     String
+  payerEmail String  @map("payer_email")
+  payerName  String? @map("payer_name")
+
+  /// Primeira caixa a criar (a parte antes do @).
+  localPart      String @map("local_part")
+  mailboxCount   Int    @default(1) @map("mailbox_count")
+  unitPriceCents Int    @map("unit_price_cents")
+
+  /// Referencia de cobranca. Nasce sintetica (`auto:<token>`) porque no
+  /// self-service ainda nao existe cliente no portal quando o pedido e criado.
+  clientRef     String  @unique @map("client_ref")
+  preapprovalId String? @unique @map("preapproval_id")
+  initPoint     String? @map("init_point")
+
+  /// aguardando_pagamento | pago | provisionado | expirado | falhou
+  status String  @default("aguardando_pagamento")
+  erro   String?
+  ip     String?
+
+  createdAt     DateTime  @default(now()) @map("created_at")
+  expiresAt     DateTime  @map("expires_at")
+  provisionedAt DateTime? @map("provisioned_at")
+
+  @@index([domain])
+  @@index([status])
+  @@map("mail_signups")
+}

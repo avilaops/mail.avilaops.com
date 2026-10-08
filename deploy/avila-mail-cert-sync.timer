@@ -1,0 +1,14 @@
+[Unit]
+Description=Avila Mail - sincroniza o certificado TLS diariamente
+
+[Timer]
+# Diario, com folga aleatoria para nao competir com a renovacao do Caddy.
+OnCalendar=daily
+RandomizedDelaySec=30m
+# Servidor desligado na hora marcada nao pode significar certificado velho.
+Persistent=true
+# Uma passada logo apos o boot: se o certificado mudou enquanto estava fora.
+OnBootSec=10min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,59 @@
+{
+  "name": "avila-mail",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Servidor de e-mail proprio da Avila Ops - mail.avilaops.com",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev:mta": "tsx watch src/mta/index.ts",
+    "dev:api": "tsx watch src/api/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start:mta": "node dist/mta/index.js",
+    "start:api": "node dist/api/index.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate deploy",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:smoke": "tsx src/scripts/smoke.ts",
+    "test:security": "tsx src/scripts/security-probe.ts",
+    "test:integration": "tsx src/scripts/integration.ts",
+    "test": "bash deploy/run-integration.sh",
+    "dkim:auditar": "tsx src/scripts/teste-dkim-zona.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6",
+    "bcryptjs": "^2.4.3",
+    "fast-xml-parser": "^4.5.7",
+    "imapflow": "^1.7.0",
+    "jsonwebtoken": "^9.0.3",
+    "mailauth": "^5.0.1",
+    "mailparser": "^3.9.15",
+    "nodemailer": "^9.0.5",
+    "sanitize-html": "^2.17.7",
+    "smtp-server": "^3.19.3",
+    "web-push": "^3.6.7",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/mailparser": "^3.4.5",
+    "@types/node": "^24",
+    "@types/nodemailer": "^7",
+    "@types/sanitize-html": "^2.16.1",
+    "@types/smtp-server": "^3.5.10",
+    "@types/web-push": "^3.6.4",
+    "prisma": "^6",
+    "tsdav": "^2.3.1",
+    "tsx": "^4",
+    "typescript": "^5"
+  },
+  "allowScripts": {
+    "@prisma/client@6.19.3": true,
+    "@prisma/engines@6.19.3": true,
+    "prisma@6.19.3": true,
+    "esbuild@0.28.2": true
+  }
+}
