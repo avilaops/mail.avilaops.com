@@ -1502,6 +1502,18 @@ check(
 );
 
 console.log("\n[34] Cancelamento e visao geral");
+// O id notificado e o da assinatura, o mesmo do comeco ao fim. A primeira
+// notificacao (cartao ainda nao cadastrado) nao pode fazer as seguintes serem
+// descartadas como repetidas: sao elas que provisionam e que cancelam.
+estadoAssinatura = "pending";
+await processarNotificacao({ topic: "subscription_preapproval", dataId: "PREAPPROVAL-TESTE" });
+check("espelha a assinatura ainda sem cartao", (await resumoConta("cli_brilhax")).status === "pending");
+
+estadoAssinatura = "authorized";
+const autorizada = await processarNotificacao({ topic: "subscription_preapproval", dataId: "PREAPPROVAL-TESTE" });
+check("segunda notificacao da mesma assinatura e processada", autorizada.processada === true);
+check("espelha a autorizacao", (await resumoConta("cli_brilhax")).status === "authorized");
+
 estadoAssinatura = "cancelled";
 await processarNotificacao({ topic: "subscription_preapproval", dataId: "PREAPPROVAL-TESTE" });
 check("cancelamento no MP suspende o acesso", (await resumoConta("cli_brilhax")).suspendedAt !== null);

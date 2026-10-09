@@ -248,15 +248,23 @@ export interface Notificacao {
  * Idempotente por construcao: a notificacao e gravada com chave unica ANTES
  * de ser processada. O MP reenvia a mesma notificacao quando nao recebe 200
  * rapido, e sem isso o mesmo pagamento entraria duas vezes.
+ *
+ * A excecao e `subscription_preapproval`. Ali o id notificado e o da
+ * assinatura, que e o mesmo do cadastro do cartao ao cancelamento: descartar
+ * pela chave jogava fora toda mudanca de estado depois da primeira — a
+ * autorizacao que provisiona a caixa de quem acabou de pagar, e o
+ * cancelamento que tira o acesso. Esse topico nao carrega um fato, so manda
+ * reler a assinatura no MP, e reler duas vezes da no mesmo lugar.
  */
 export async function processarNotificacao(notificacao: Notificacao): Promise<{ processada: boolean; motivo: string }> {
   const chave = `${notificacao.topic}:${notificacao.dataId}`;
+  const espelhaEstado = notificacao.topic === "subscription_preapproval";
 
   const jaVista = await prisma.billingEvent.findUnique({
     where: { notificationId: chave },
     select: { processedAt: true },
   });
-  if (jaVista?.processedAt) return { processada: false, motivo: "notificacao repetida" };
+  if (jaVista?.processedAt && !espelhaEstado) return { processada: false, motivo: "notificacao repetida" };
 
   const evento = await prisma.billingEvent.upsert({
     where: { notificationId: chave },
@@ -275,7 +283,7 @@ export async function processarNotificacao(notificacao: Notificacao): Promise<{ 
 
     await prisma.billingEvent.update({
       where: { id: evento.id },
-      data: { processedAt: new Date(), accountId: resultado.accountId ?? null },
+      data: { processedAt: new Date(), accountId: resultado.accountId ?? null, error: null },
     });
 
     return { processada: true, motivo: resultado.motivo };
