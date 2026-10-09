@@ -80,6 +80,126 @@ async function montarEmail(destino: string, endereco: string, token: string): Pr
   return composer.compile().build();
 }
 
+/**
+ * Validade do link de primeiro acesso. Bem maior que a da redefinicao: quem
+ * comprou no fim da tarde so abre o e-mail no dia seguinte, e link vencido na
+ * primeira visita e cliente pagante batendo em porta fechada. Passado o prazo,
+ * "Esqueci a senha" resolve sozinho, porque o e-mail de recuperacao ja esta
+ * cadastrado.
+ */
+const VALIDADE_PRIMEIRO_ACESSO_HORAS = 72;
+
+async function montarEmailDePrimeiroAcesso(input: {
+  destino: string;
+  endereco: string;
+  token: string;
+  assunto: string;
+}): Promise<Buffer> {
+  const { destino, endereco, token, assunto } = input;
+  const link = `https://${config.hostname}/redefinir?token=${token}`;
+  const recuperar = `https://${config.hostname}/recuperar`;
+
+  const texto = [
+    `O pagamento foi confirmado e a caixa ${endereco} esta pronta.`,
+    "",
+    "Abra o endereco abaixo para criar a sua senha:",
+    link,
+    "",
+    `O link vale por ${VALIDADE_PRIMEIRO_ACESSO_HORAS} horas e so pode ser usado uma vez.`,
+    `Se ele vencer, peca outro em ${recuperar} informando ${endereco}.`,
+    "",
+    "Depois de criar a senha:",
+    `  Webmail: https://${config.hostname}`,
+    `  Celular e Outlook: https://${config.hostname}/configurar`,
+    "",
+    "Avila Ops Tecnologia",
+  ].join("\r\n");
+
+  const html = `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:520px;color:#1a1a1a;line-height:1.6;">
+<p style="font-size:18px;margin:0 0 4px;">Sua caixa <strong>${endereco}</strong> esta pronta.</p>
+<p style="margin:0;color:#666;">O pagamento foi confirmado. Falta so voce criar a sua senha.</p>
+<p style="margin:24px 0;">
+  <a href="${link}" style="display:inline-block;padding:12px 24px;background:#1a1a1a;color:#fff;text-decoration:none;border-radius:6px;">Criar minha senha</a>
+</p>
+<p style="font-size:14px;color:#666;">O link vale por ${VALIDADE_PRIMEIRO_ACESSO_HORAS} horas e so pode ser usado uma vez. Se ele vencer, peca outro em <a href="${recuperar}">${config.hostname}/recuperar</a> informando ${endereco}.</p>
+<p style="font-size:14px;color:#666;">Depois de criar a senha, o passo a passo para celular e Outlook esta em <a href="https://${config.hostname}/configurar">${config.hostname}/configurar</a>.</p>
+<p style="margin-top:24px;font-size:13px;color:#666;">Avila Ops Tecnologia</p>
+</div>`;
+
+  const composer = new MailComposer({
+    from: { name: "Avila Ops", address: `naoresponda@${ROOT_ZONE}` },
+    to: destino,
+    subject: assunto,
+    text: texto,
+    html,
+    messageId: `<${randomUUID()}@${ROOT_ZONE}>`,
+    date: new Date(),
+    textEncoding: "quoted-printable",
+  });
+
+  return composer.compile().build();
+}
+
+/**
+ * Manda o link para o dono criar a senha da caixa que acabou de comprar.
+ *
+ * E a entrega da caixa no autoatendimento. A senha nao viaja por e-mail em
+ * lugar nenhum da casa (ver `welcome.ts`), entao quem compra sozinho recebe um
+ * link de uso unico e escolhe a propria senha — a que criamos no
+ * provisionamento nunca e mostrada a ninguem.
+ *
+ * Diferente de `requestPasswordReset`, esta funcao LANCA: e chamada pelo
+ * provisionamento, e pedido pago sem link entregue e pedido que falhou.
+ */
+export async function enviarLinkDePrimeiroAcesso(mailboxId: string): Promise<{ sentTo: string }> {
+  const mailbox = await prisma.mailbox.findUnique({
+    where: { id: mailboxId },
+    select: { localPart: true, recoveryEmail: true, domain: { select: { name: true } } },
+  });
+  if (!mailbox) throw new AuthError("Caixa nao encontrada para o primeiro acesso.", 404);
+  if (!mailbox.recoveryEmail) {
+    throw new AuthError("Caixa sem e-mail de contato: nao ha para onde mandar o primeiro acesso.", 422);
+  }
+
+  const endereco = `${mailbox.localPart}@${mailbox.domain.name}`;
+  const token = randomBytes(32).toString("base64url");
+
+  await prisma.passwordResetToken.updateMany({
+    where: { mailboxId, usedAt: null },
+    data: { usedAt: new Date() },
+  });
+
+  await prisma.passwordResetToken.create({
+    data: {
+      mailboxId,
+      tokenHash: hashToken(token),
+      expiresAt: new Date(Date.now() + VALIDADE_PRIMEIRO_ACESSO_HORAS * 3_600_000),
+    },
+  });
+
+  const assunto = `Sua caixa ${endereco} esta pronta: crie a sua senha`;
+
+  await enqueueOutbound({
+    envelopeFrom: `naoresponda@${ROOT_ZONE}`,
+    recipients: [mailbox.recoveryEmail],
+    raw: await montarEmailDePrimeiroAcesso({ destino: mailbox.recoveryEmail, endereco, token, assunto }),
+    subject: assunto,
+    sign: true,
+  });
+
+  await prisma.mailEvent.create({
+    data: {
+      mailboxId,
+      type: "password.first_access_sent",
+      payload: { sentTo: mascarar(mailbox.recoveryEmail) },
+    },
+  });
+
+  log.info("link de primeiro acesso enviado", { mailboxId });
+
+  return { sentTo: mascarar(mailbox.recoveryEmail) };
+}
+
 export interface RequestResetResult {
   /** Sempre true. O detalhe real fica so no log. */
   accepted: true;

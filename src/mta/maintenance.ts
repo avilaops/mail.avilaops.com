@@ -117,6 +117,8 @@ export async function rodarManutencao(): Promise<void> {
       filaEncerrada: fila,
       pedidosExpirados: selfService.expirados,
       freiosDeNovatoSoltos: selfService.freiosSoltos,
+      pedidosPagosRetomados: selfService.retomados,
+      pedidosPagosTravados: selfService.travados,
       dominiosConferidos: dns.conferidos,
       dominiosComProblema: dns.comProblema,
       dominiosCriticos: dns.criticos,
