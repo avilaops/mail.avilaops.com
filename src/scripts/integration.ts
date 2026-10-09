@@ -2942,6 +2942,137 @@ console.log("\n[48] Busca por anexo: arquivos, imagens e PDFs");
   await prisma.message.deleteMany({ where: { id: { in: [semAnexo, comPdf, comFoto, comPlanilha, soLogo, fotoNoCorpo] } } });
 }
 
+console.log("\n[49] Autoatendimento: pagar, receber a caixa e criar a senha");
+{
+  const { manutencaoDoSelfService, estadoDoPedido } = await import("../services/signupCheckout.js");
+
+  // O checkout em si consulta DNS e RDAP de verdade; o que se testa aqui e o
+  // que vem depois do pagamento, que e onde o cliente paga e fica sem caixa.
+  let estadoAuto = "pending";
+  const referenciaAuto = "auto:token-pedido-49";
+  globalThis.fetch = (async (entrada: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = String(entrada);
+    if (!url.startsWith("https://api.mercadopago.com")) return fetchOriginal(entrada, init);
+    return new Response(
+      JSON.stringify({ id: "PREAPPROVAL-49", status: estadoAuto, external_reference: referenciaAuto }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  const criarPedido = (token: string, dominio: string, pagador: string, status = "aguardando_pagamento") =>
+    prisma.mailSignup.create({
+      data: {
+        token,
+        domain: dominio,
+        payerEmail: pagador,
+        payerName: "Dona da Loja",
+        localPart: "contato",
+        mailboxCount: 1,
+        unitPriceCents: 1000,
+        clientRef: `auto:${token}`,
+        status,
+        expiresAt: new Date(Date.now() + 3_600_000),
+      },
+    });
+
+  await criarPedido("token-pedido-49", "lojanova49.com.br", "dona49@gmail.com");
+
+  // O MP avisa da assinatura antes de o cartao ser cadastrado.
+  await processarNotificacao({ topic: "subscription_preapproval", dataId: "PREAPPROVAL-49" });
+  check(
+    "assinatura sem cartao nao cria dominio",
+    (await prisma.mailDomain.count({ where: { name: "lojanova49.com.br" } })) === 0,
+  );
+  check("pedido segue aguardando pagamento", (await estadoDoPedido("token-pedido-49")).status === "aguardando_pagamento");
+
+  // Mesmo id de assinatura, agora autorizada: e esta que nao pode ser descartada.
+  estadoAuto = "authorized";
+  await processarNotificacao({ topic: "subscription_preapproval", dataId: "PREAPPROVAL-49" });
+
+  const pedidoPago = await estadoDoPedido("token-pedido-49");
+  check("pagamento confirmado provisiona o pedido", pedidoPago.status === "provisionado");
+  check("devolve o endereco da caixa", pedidoPago.endereco === "contato@lojanova49.com.br");
+
+  const caixa49 = await prisma.mailbox.findFirstOrThrow({
+    where: { localPart: "contato", domain: { name: "lojanova49.com.br" } },
+    select: { id: true, recoveryEmail: true, mustChangePassword: true, sendLimitPerHour: true, probationUntil: true },
+  });
+  check("e-mail do pagador vira o de recuperacao", caixa49.recoveryEmail === "dona49@gmail.com");
+  check("caixa nasce com o freio de novato", caixa49.sendLimitPerHour === 20 && caixa49.probationUntil !== null);
+  check("nao pede troca da senha que o dono acabou de criar", caixa49.mustChangePassword === false);
+
+  const paraOPagador = await prisma.outboundMessage.findMany({
+    where: { recipients: { array_contains: ["dona49@gmail.com"] } },
+    select: { storageKey: true },
+  });
+  check("pagador recebe um unico e-mail", paraOPagador.length === 1, `recebeu ${paraOPagador.length}`);
+
+  const corpo49 = (await readRaw(paraOPagador[0]?.storageKey ?? ""))
+    .toString("utf8")
+    .replace(/=\r?\n/g, "")
+    .replace(/=3F/gi, "?")
+    .replace(/=3D/gi, "=");
+  const token49 = corpo49.match(/redefinir\?token=([A-Za-z0-9_-]+)/)?.[1] ?? "";
+  check("o e-mail leva o link para criar a senha", token49.length === 43, `veio com ${token49.length} caracteres`);
+  check("o e-mail nao promete senha por outro canal", !corpo49.includes("entregue separadamente"));
+
+  const tokenGuardado = await prisma.passwordResetToken.findFirstOrThrow({
+    where: { mailboxId: caixa49.id, usedAt: null },
+    select: { expiresAt: true },
+  });
+  check(
+    "link de primeiro acesso vale mais de um dia",
+    tokenGuardado.expiresAt.getTime() - Date.now() > 24 * 3_600_000,
+  );
+
+  await resetPassword({ token: token49, newPassword: "SenhaDaDona12345" });
+  const sessao49 = await login({ address: "contato@lojanova49.com.br", password: "SenhaDaDona12345", ip: "203.0.113.149" });
+  check("dono entra com a senha que criou pelo link", sessao49.accessToken.length > 0);
+
+  // O MP reenvia: a caixa nao pode nascer de novo nem o link ser trocado.
+  await processarNotificacao({ topic: "subscription_preapproval", dataId: "PREAPPROVAL-49" });
+  check(
+    "notificacao repetida nao manda outro e-mail",
+    (await prisma.outboundMessage.count({ where: { recipients: { array_contains: ["dona49@gmail.com"] } } })) === 1,
+  );
+  check(
+    "notificacao repetida nao troca a senha do dono",
+    (await login({ address: "contato@lojanova49.com.br", password: "SenhaDaDona12345", ip: "203.0.113.149" })).accessToken.length > 0,
+  );
+
+  // Pedido que caiu no meio: dominio e caixa ja existem, o link nunca saiu.
+  await criarPedido("token-retomada-49", "retomada49.com.br", "retomada49@gmail.com", "falhou");
+  await createDomain({ domain: "retomada49.com.br", clientRef: "auto:token-retomada-49" });
+  await createMailbox({ domain: "retomada49.com.br", username: "contato", password: SENHA });
+
+  // Pedido pago para um dominio que outro cliente levou antes.
+  await criarPedido("token-alheio-49", "alheio49.com.br", "invasor49@gmail.com", "falhou");
+  await createDomain({ domain: "alheio49.com.br", clientRef: "cli_dono_de_verdade" });
+  await createMailbox({ domain: "alheio49.com.br", username: "contato", password: SENHA });
+
+  const faxina49 = await manutencaoDoSelfService();
+  check("faxina retoma o pedido pago que tinha falhado", faxina49.retomados === 1, `retomou ${faxina49.retomados}`);
+  check("pedido retomado fica provisionado", (await estadoDoPedido("token-retomada-49")).status === "provisionado");
+  check(
+    "pedido retomado recebe o link de primeiro acesso",
+    (await prisma.outboundMessage.count({ where: { recipients: { array_contains: ["retomada49@gmail.com"] } } })) === 1,
+  );
+
+  check("pedido para dominio de outro cliente fica travado", faxina49.travados === 1, `travou ${faxina49.travados}`);
+  check("pedido travado continua marcado como falha", (await estadoDoPedido("token-alheio-49")).status === "falhou");
+  const caixaAlheia = await prisma.mailbox.findFirstOrThrow({
+    where: { localPart: "contato", domain: { name: "alheio49.com.br" } },
+    select: { recoveryEmail: true },
+  });
+  check("caixa do outro cliente nao ganha o e-mail de quem pagou depois", caixaAlheia.recoveryEmail === null);
+  check(
+    "quem pagou depois nao recebe link para a caixa do outro",
+    (await prisma.outboundMessage.count({ where: { recipients: { array_contains: ["invasor49@gmail.com"] } } })) === 0,
+  );
+
+  globalThis.fetch = fetchOriginal;
+}
+
 await prisma.$disconnect();
 rmSync(workDir, { recursive: true, force: true });
 

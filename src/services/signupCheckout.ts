@@ -1,12 +1,16 @@
-import { randomBytes, randomInt } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import { config } from "../lib/config.js";
 import { prisma } from "../lib/db.js";
 import { createLogger } from "../lib/logger.js";
 import { criarAssinatura } from "../lib/mercadopago.js";
+import { enqueueOutbound } from "../mta/queue.js";
 import { createDomain, createMailbox } from "./provisioning.js";
 import { SignupError, conferirDns, normalizarDominio, travarCheckout } from "./publicSignup.js";
+import { enviarLinkDePrimeiroAcesso } from "./recovery.js";
 
 const log = createLogger("signup-checkout");
+const ROOT_ZONE = config.hostname.split(".").slice(-2).join(".");
 
 /**
  * Passo 2 e 3 do autoatendimento: cobrar primeiro, provisionar depois.
@@ -84,17 +88,14 @@ export interface PedidoDeCadastro {
 }
 
 /**
- * Senha provisoria legivel ao telefone.
+ * Senha com que a caixa nasce, e que ninguem nunca ve.
  *
- * Mesmo alfabeto do resto da casa (sem 0/O/1/I/L). Vinte caracteres porque
- * esta senha viaja por e-mail para um endereco externo: ela vale ate o
- * primeiro acesso, e o primeiro acesso obriga a troca.
+ * A caixa precisa de um hash de senha para existir, mas a casa nao manda
+ * senha por e-mail (ver `welcome.ts`). Entao esta aqui so ocupa o lugar: o
+ * dono cria a dele pelo link de primeiro acesso, e ate la nao ha como entrar.
  */
-function senhaProvisoria(): string {
-  const alfabeto = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
-  let s = "";
-  for (let i = 0; i < 20; i += 1) s += alfabeto[randomInt(alfabeto.length)];
-  return s;
+function senhaInacessivel(): string {
+  return randomBytes(32).toString("base64url");
 }
 
 /**
@@ -295,9 +296,9 @@ export async function estadoDoPedido(token: string) {
   return {
     ...pedido,
     endereco: pedido.status === "provisionado" ? `${pedido.localPart}@${pedido.domain}` : null,
-    // A senha nunca volta por aqui: ela foi mandada para o e-mail de contato,
-    // uma vez so. Devolver na tela transformaria o token do pedido, que anda
-    // na URL, em credencial da caixa.
+    // Nenhuma credencial volta por aqui: o link para criar a senha foi para o
+    // e-mail de contato. Devolver na tela transformaria o token do pedido, que
+    // anda na URL, em credencial da caixa.
   };
 }
 
@@ -312,7 +313,11 @@ export async function provisionarPedidoPago(clientRef: string): Promise<{ provis
   const pedido = await prisma.mailSignup.findUnique({ where: { clientRef } });
   if (!pedido) return { provisionado: false, motivo: "sem pedido de cadastro" };
   if (pedido.status === "provisionado") return { provisionado: false, motivo: "pedido ja provisionado" };
-  if (pedido.status === "expirado") return { provisionado: false, motivo: "pedido expirado" };
+
+  // Pedido `expirado` segue adiante de proposito. Expirar so libera o dominio
+  // para outro pedido; o link de pagamento do Mercado Pago continua valendo, e
+  // quem pagou por ele pagou. Se o dominio ainda esta livre, a caixa nasce; se
+  // outro cliente ja o levou, a checagem de dono abaixo para e avisa.
 
   // Marca `pago` antes de comecar: se o provisionamento falhar no meio, o
   // pedido nao volta a parecer nao pago, e a falha fica registrada em `erro`
@@ -320,29 +325,58 @@ export async function provisionarPedidoPago(clientRef: string): Promise<{ provis
   await prisma.mailSignup.update({ where: { id: pedido.id }, data: { status: "pago", erro: null } });
 
   try {
-    await createDomain({ domain: pedido.domain, clientRef: pedido.clientRef });
+    const dominio = await createDomain({ domain: pedido.domain, clientRef: pedido.clientRef });
 
-    const senha = senhaProvisoria();
-    await createMailbox({
-      domain: pedido.domain,
-      username: pedido.localPart,
-      password: senha,
-      notifyTo: pedido.payerEmail,
-      displayName: pedido.payerName ?? undefined,
-      // A senha e nossa, entao a troca no primeiro acesso e obrigatoria: ela
-      // viajou por e-mail ate um endereco de outro provedor.
-      mustChangePassword: true,
+    // `createDomain` devolve o dominio que ja existe sem reclamar. Se ele e de
+    // outro cliente — outro pedido para o mesmo dominio que pagou antes — seguir
+    // daqui mandaria para ESTE pagador o link que cria a senha da caixa do
+    // outro. Para e deixa a operacao decidir: e caso de estorno, nao de retomada.
+    const dono = await prisma.mailDomain.findUnique({ where: { id: dominio.id }, select: { clientRef: true } });
+    if (dono?.clientRef !== pedido.clientRef) {
+      throw new SignupError(`O dominio ${pedido.domain} ja pertence a outro cliente; pedido pago precisa de estorno.`, 409);
+    }
+
+    // Tentativa anterior pode ter criado a caixa e caido depois. `createMailbox`
+    // recusa caixa que ja existe, e sem esta checagem o pedido pago ficaria
+    // preso em `falhou` para sempre, falhando de novo a cada retomada.
+    const existente = await prisma.mailbox.findUnique({
+      where: { domainId_localPart: { domainId: dominio.id, localPart: pedido.localPart } },
+      select: { id: true },
     });
 
-    // Freio de novato. Fica na caixa, nao no dominio: quem compra hoje envia
-    // pouco, e a faxina diaria solta o freio quando o prazo passa.
-    await prisma.mailbox.updateMany({
-      where: { domain: { name: pedido.domain }, localPart: pedido.localPart },
+    const caixaId =
+      existente?.id ??
+      (
+        await createMailbox({
+          domain: pedido.domain,
+          username: pedido.localPart,
+          password: senhaInacessivel(),
+          displayName: pedido.payerName ?? undefined,
+          // Sem `notifyTo`: o aviso padrao diz "senha entregue separadamente",
+          // e aqui nao ha ninguem para entregar. Quem avisa e o link de
+          // primeiro acesso, logo abaixo.
+          //
+          // Sem troca obrigatoria: a senha que vale e a que o dono cria pelo
+          // link, e pedir para trocar em seguida a senha que ele acabou de
+          // escolher e so atrito.
+          mustChangePassword: false,
+        })
+      ).id;
+
+    await prisma.mailbox.update({
+      where: { id: caixaId },
       data: {
+        // E o que faz o link de primeiro acesso ter para onde ir, e o que
+        // deixa o "Esqueci a senha" funcionar quando o link vencer.
+        recoveryEmail: pedido.payerEmail,
+        // Freio de novato. Fica na caixa, nao no dominio: quem compra hoje
+        // envia pouco, e a faxina diaria solta o freio quando o prazo passa.
         sendLimitPerHour: config.signup.limiteEnvioNovato,
         probationUntil: new Date(Date.now() + config.signup.diasNovato * 86_400_000),
       },
     });
+
+    await enviarLinkDePrimeiroAcesso(caixaId);
 
     await prisma.mailSignup.update({
       where: { id: pedido.id },
@@ -365,12 +399,114 @@ export async function provisionarPedidoPago(clientRef: string): Promise<{ provis
 }
 
 /**
+ * Pedido `pago` mais novo que isto pode estar sendo provisionado agora pelo
+ * webhook. Retomar por cima criaria a caixa em duas frentes.
+ */
+const MINUTOS_ANTES_DE_RETOMAR = 15;
+
+/**
+ * Avisa a operacao de pedido pago que continua sem caixa.
+ *
+ * E o unico aviso desta casa que significa "alguem pagou e nao recebeu".
+ * Repete a cada faxina enquanto durar, de proposito: ao contrario do DNS de um
+ * cliente, este problema nao tem versao toleravel.
+ */
+async function avisarPedidosTravados(travados: Array<{ domain: string; payerEmail: string; erro: string }>): Promise<void> {
+  const destinatarios = config.admin.addresses;
+  if (destinatarios.length === 0) {
+    log.error("ha pedido pago sem caixa, mas MAIL_ADMIN_ADDRESSES esta vazio; ninguem sera notificado", {
+      pedidos: travados.length,
+    });
+    return;
+  }
+
+  const assunto = `[mail] ${travados.length} pedido(s) pago(s) sem caixa criada`;
+  const remetente = `naoresponda@${ROOT_ZONE}`;
+  const texto = [
+    "Cliente que PAGOU pelo autoatendimento e ainda NAO recebeu a caixa.",
+    "A retomada automatica tentou de novo e falhou. Precisa de gente.",
+    "",
+    ...travados.flatMap((pedido) => [
+      `Dominio:  ${pedido.domain}`,
+      `Pagador:  ${pedido.payerEmail}`,
+      `Erro:     ${pedido.erro}`,
+      "",
+    ]),
+    "A tentativa se repete a cada faxina diaria. O pedido fica em mail_signups com status 'falhou'.",
+  ].join("\r\n");
+
+  const bruto = await new MailComposer({
+    from: { name: "Avila Mail (autoatendimento)", address: remetente },
+    to: destinatarios.join(", "),
+    subject: assunto,
+    text: texto,
+    messageId: `<${randomUUID()}@${ROOT_ZONE}>`,
+    date: new Date(),
+    textEncoding: "quoted-printable",
+  })
+    .compile()
+    .build();
+
+  await enqueueOutbound({ envelopeFrom: remetente, recipients: destinatarios, raw: bruto, subject: assunto, sign: true });
+}
+
+/**
+ * Tenta de novo os pedidos pagos que ficaram sem caixa.
+ *
+ * O webhook provisiona na hora, mas basta o banco piscar no meio para o pedido
+ * parar em `falhou` — ou em `pago`, se o processo caiu antes de registrar a
+ * falha. Sem retomada, o unico sinal seria o cliente reclamando que pagou.
+ */
+async function retomarPedidosPagos(): Promise<{ retomados: number; travados: number }> {
+  const corte = new Date(Date.now() - MINUTOS_ANTES_DE_RETOMAR * 60_000);
+
+  const pendentes = await prisma.mailSignup.findMany({
+    where: {
+      OR: [{ status: "falhou" }, { status: "pago", createdAt: { lt: corte } }],
+    },
+    select: { clientRef: true, domain: true, payerEmail: true },
+  });
+
+  let retomados = 0;
+  const travados: Array<{ domain: string; payerEmail: string; erro: string }> = [];
+
+  for (const pedido of pendentes) {
+    try {
+      const resultado = await provisionarPedidoPago(pedido.clientRef);
+      if (resultado.provisionado) retomados += 1;
+    } catch (falha) {
+      travados.push({
+        domain: pedido.domain,
+        payerEmail: pedido.payerEmail,
+        erro: falha instanceof Error ? falha.message : String(falha),
+      });
+    }
+  }
+
+  if (travados.length > 0) {
+    await avisarPedidosTravados(travados).catch((falha) => {
+      log.error("nao foi possivel avisar sobre pedido pago sem caixa", {
+        erro: falha instanceof Error ? falha.message : String(falha),
+      });
+    });
+  }
+
+  return { retomados, travados: travados.length };
+}
+
+/**
  * Faxina do self-service, chamada pela manutencao diaria.
  *
- * Duas coisas que so acontecem com o tempo: pedido que ninguem pagou some, e
- * caixa que passou da quarentena volta ao limite normal de envio.
+ * O que so acontece com o tempo: pedido que ninguem pagou some, caixa que
+ * passou da quarentena volta ao limite normal de envio, e pedido pago que
+ * ficou sem caixa e tentado de novo.
  */
-export async function manutencaoDoSelfService(): Promise<{ expirados: number; freiosSoltos: number }> {
+export async function manutencaoDoSelfService(): Promise<{
+  expirados: number;
+  freiosSoltos: number;
+  retomados: number;
+  travados: number;
+}> {
   const agora = new Date();
 
   const expirados = await prisma.mailSignup.updateMany({
@@ -383,8 +519,14 @@ export async function manutencaoDoSelfService(): Promise<{ expirados: number; fr
     data: { sendLimitPerHour: LIMITE_ENVIO_NORMAL, probationUntil: null },
   });
 
-  if (expirados.count || freiosSoltos.count) {
-    log.info("manutencao do self-service", { expirados: expirados.count, freiosSoltos: freiosSoltos.count });
+  const retomada = await retomarPedidosPagos();
+
+  if (expirados.count || freiosSoltos.count || retomada.retomados || retomada.travados) {
+    log.info("manutencao do self-service", {
+      expirados: expirados.count,
+      freiosSoltos: freiosSoltos.count,
+      ...retomada,
+    });
   }
-  return { expirados: expirados.count, freiosSoltos: freiosSoltos.count };
+  return { expirados: expirados.count, freiosSoltos: freiosSoltos.count, ...retomada };
 }
