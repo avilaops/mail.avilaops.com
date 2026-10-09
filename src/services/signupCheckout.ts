@@ -384,6 +384,16 @@ export async function provisionarPedidoPago(clientRef: string): Promise<{ provis
     });
 
     log.info("pedido provisionado", { dominio: pedido.domain, caixa: `${pedido.localPart}@${pedido.domain}` });
+
+    // Depois de marcar `provisionado` e sem deixar subir: o cliente ja foi
+    // atendido, e aviso interno que falha nao pode desfazer isso.
+    await avisarVenda(pedido).catch((falha) => {
+      log.error("venda provisionada, mas o aviso a operacao nao saiu", {
+        dominio: pedido.domain,
+        erro: falha instanceof Error ? falha.message : String(falha),
+      });
+    });
+
     return { provisionado: true, motivo: "dominio e caixa criados" };
   } catch (falha) {
     const mensagem = falha instanceof Error ? falha.message : String(falha);
@@ -412,17 +422,7 @@ const MINUTOS_ANTES_DE_RETOMAR = 15;
  * cliente, este problema nao tem versao toleravel.
  */
 async function avisarPedidosTravados(travados: Array<{ domain: string; payerEmail: string; erro: string }>): Promise<void> {
-  const destinatarios = config.admin.addresses;
-  if (destinatarios.length === 0) {
-    log.error("ha pedido pago sem caixa, mas MAIL_ADMIN_ADDRESSES esta vazio; ninguem sera notificado", {
-      pedidos: travados.length,
-    });
-    return;
-  }
-
-  const assunto = `[mail] ${travados.length} pedido(s) pago(s) sem caixa criada`;
-  const remetente = `naoresponda@${ROOT_ZONE}`;
-  const texto = [
+  await avisarOperacao(`[mail] ${travados.length} pedido(s) pago(s) sem caixa criada`, [
     "Cliente que PAGOU pelo autoatendimento e ainda NAO recebeu a caixa.",
     "A retomada automatica tentou de novo e falhou. Precisa de gente.",
     "",
@@ -433,13 +433,59 @@ async function avisarPedidosTravados(travados: Array<{ domain: string; payerEmai
       "",
     ]),
     "A tentativa se repete a cada faxina diaria. O pedido fica em mail_signups com status 'falhou'.",
-  ].join("\r\n");
+  ]);
+}
+
+/**
+ * Avisa a operacao de cada venda fechada sem ninguem da casa no meio.
+ *
+ * Autoatendimento que funciona e silencioso por definicao, e venda que
+ * ninguem viu e cliente novo sem ninguem de olho na primeira semana. Tambem e
+ * o unico lugar que lembra das caixas que faltam: o pedido cria so a primeira,
+ * e as demais nascem pelo painel administrativo.
+ */
+async function avisarVenda(pedido: {
+  domain: string;
+  payerEmail: string;
+  payerName: string | null;
+  localPart: string;
+  mailboxCount: number;
+}): Promise<void> {
+  const faltam = pedido.mailboxCount - 1;
+
+  await avisarOperacao(`[mail] Venda pelo autoatendimento: ${pedido.domain}`, [
+    "Um pedido do autoatendimento foi pago e provisionado.",
+    "",
+    `Dominio:            ${pedido.domain}`,
+    `Pagador:            ${pedido.payerName ? `${pedido.payerName} <${pedido.payerEmail}>` : pedido.payerEmail}`,
+    `Caixa criada:       ${pedido.localPart}@${pedido.domain}`,
+    `Caixas contratadas: ${pedido.mailboxCount}`,
+    "",
+    ...(faltam > 0
+      ? [
+          `FALTAM ${faltam} CAIXA(S). O pedido cria so a primeira: combine os nomes com o`,
+          `cliente e crie as demais em https://${config.hostname}/admin. A cobranca acompanha`,
+          "o numero de caixas que existem, entao ela so chega ao valor contratado depois disso.",
+        ]
+      : ["Nada a fazer: o cliente ja recebeu o link para criar a senha."]),
+  ]);
+}
+
+/** Manda um aviso de texto para `MAIL_ADMIN_ADDRESSES`. */
+async function avisarOperacao(assunto: string, linhas: string[]): Promise<void> {
+  const destinatarios = config.admin.addresses;
+  if (destinatarios.length === 0) {
+    log.error("ha o que avisar, mas MAIL_ADMIN_ADDRESSES esta vazio; ninguem sera notificado", { assunto });
+    return;
+  }
+
+  const remetente = `naoresponda@${ROOT_ZONE}`;
 
   const bruto = await new MailComposer({
     from: { name: "Avila Mail (autoatendimento)", address: remetente },
     to: destinatarios.join(", "),
     subject: assunto,
-    text: texto,
+    text: linhas.join("\r\n"),
     messageId: `<${randomUUID()}@${ROOT_ZONE}>`,
     date: new Date(),
     textEncoding: "quoted-printable",
