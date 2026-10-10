@@ -3,6 +3,7 @@ import { z } from "zod";
 import { config } from "../lib/config.js";
 import { prisma } from "../lib/db.js";
 import { descobrirDnsDoDominio } from "../lib/provedorDns.js";
+import { dnsPublicavel, publicarDnsDoDominio } from "../services/publicacaoDns.js";
 import { generatePassword } from "../lib/password.js";
 import { orcamentoDeHoje } from "../mta/warmup.js";
 import { fail, json, readBody } from "./http.js";
@@ -55,6 +56,9 @@ const quotaSchema = caixaRefSchema.extend({ quotaGb: z.number().int().positive()
 const donoSchema = caixaRefSchema.extend({ ownerEmail: z.string().email().nullable() });
 const aliasSchema = z.object({ domain: z.string().min(3), alias: z.string().min(1), destination: z.string().min(5) });
 const aliasRefSchema = z.object({ domain: z.string().min(3), alias: z.string().min(1) });
+/** `substituirMx` so vem marcado depois de a tela avisar que o e-mail atual para de chegar. */
+const publicarDnsSchema = z.object({ substituirMx: z.boolean().optional() });
+
 const catchAllSchema = z.object({ username: z.string().min(1).nullable() });
 /** destination nulo remove a regra de encaminhamento de todas as caixas. */
 const encaminharTudoSchema = z.object({
@@ -129,6 +133,8 @@ async function detalheDominio(domainName: string) {
     // Onde publicar os registros: provedor identificado pelos servidores de nome.
     dnsProvedor: dns.provedor,
     dnsServidores: dns.servidores,
+    // A zona esta na conta da Cloudflare da casa: o painel publica sozinho.
+    dnsPublicavel: dns.provedor?.id === "cloudflare" ? await dnsPublicavel(dominio.name) : false,
     dnsCheck: dominio.dnsCheck,
     dnsCheckedAt: dominio.dnsCheckedAt,
     mailboxes,
@@ -184,7 +190,7 @@ export async function handleAdminRoute(
   }
 
   const dominioMatch = path.match(
-    /^\/v1\/admin\/domains\/([^/]+)(\/verify|\/catch-all|\/encaminhar-tudo)?$/,
+    /^\/v1\/admin\/domains\/([^/]+)(\/verify|\/publish-dns|\/catch-all|\/encaminhar-tudo)?$/,
   );
   if (dominioMatch) {
     const nome = decodeURIComponent(dominioMatch[1] ?? "").toLowerCase();
@@ -201,6 +207,11 @@ export async function handleAdminRoute(
     }
     if (sufixo === "/verify" && method === "POST") {
       json(res, 200, await verifyDomainDns(nome));
+      return true;
+    }
+    if (sufixo === "/publish-dns" && method === "POST") {
+      const input = publicarDnsSchema.parse(await readBody(req));
+      json(res, 200, await publicarDnsDoDominio(nome, { substituirMx: input.substituirMx ?? false }));
       return true;
     }
     if (sufixo === "/catch-all" && method === "POST") {

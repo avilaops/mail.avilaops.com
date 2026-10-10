@@ -87,3 +87,75 @@ export async function publicarTxt(input: {
     return { ok: false, motivo: String(erro) };
   }
 }
+
+/**
+ * Daqui para baixo: zonas de CLIENTE que estao na conta da casa.
+ *
+ * A Global Key enxerga todas as zonas da conta, entao o painel consegue
+ * publicar os registros do dominio no lugar de quem cadastrou. So precisa de
+ * e-mail e chave; `zoneId` continua valendo apenas para a nossa zona.
+ */
+export function cloudflareComCredencial(): boolean {
+  return Boolean(config.cloudflare.email && config.cloudflare.globalKey);
+}
+
+export interface RegistroCloudflare {
+  id: string;
+  type: string;
+  name: string;
+  content: string;
+  priority?: number;
+}
+
+const TEMPO_LIMITE_MS = 10_000;
+
+async function chamar<T>(caminho: string, init: { method?: string; body?: string } = {}): Promise<T> {
+  const r = await fetch(`${API}${caminho}`, { ...init, headers: headers(), signal: AbortSignal.timeout(TEMPO_LIMITE_MS) });
+  const d = (await r.json()) as Resposta<T>;
+  if (!d.success) throw new Error(d.errors?.[0]?.message ?? `Cloudflare respondeu ${r.status}`);
+  return d.result;
+}
+
+/** Id da zona com exatamente este nome, se a conta da casa a enxerga. */
+export async function zonaPorNome(dominio: string): Promise<string | null> {
+  if (!cloudflareComCredencial()) return null;
+  const zonas = await chamar<{ id: string; name: string }[]>(`/zones?name=${encodeURIComponent(dominio)}`);
+  return zonas.find((z) => z.name.toLowerCase() === dominio.toLowerCase())?.id ?? null;
+}
+
+/** Todos os registros com este nome completo, de qualquer tipo. */
+export async function registrosDoNome(zoneId: string, nome: string): Promise<RegistroCloudflare[]> {
+  return chamar<RegistroCloudflare[]>(`/zones/${zoneId}/dns_records?name=${encodeURIComponent(nome)}&per_page=100`);
+}
+
+export interface RegistroNovo {
+  type: "MX" | "TXT" | "CNAME";
+  name: string;
+  content: string;
+  priority?: number;
+}
+
+function corpo(r: RegistroNovo): string {
+  return JSON.stringify({
+    type: r.type,
+    name: r.name,
+    content: r.content,
+    ttl: 1,
+    ...(r.type === "MX" ? { priority: r.priority ?? 10 } : {}),
+    // CNAME de DKIM nunca passa pelo proxy: o verificador precisa do alvo de verdade.
+    ...(r.type === "CNAME" ? { proxied: false } : {}),
+    comment: "Avila Mail",
+  });
+}
+
+export async function criarRegistro(zoneId: string, r: RegistroNovo): Promise<void> {
+  await chamar(`/zones/${zoneId}/dns_records`, { method: "POST", body: corpo(r) });
+}
+
+export async function atualizarRegistro(zoneId: string, id: string, r: RegistroNovo): Promise<void> {
+  await chamar(`/zones/${zoneId}/dns_records/${id}`, { method: "PUT", body: corpo(r) });
+}
+
+export async function apagarRegistro(zoneId: string, id: string): Promise<void> {
+  await chamar(`/zones/${zoneId}/dns_records/${id}`, { method: "DELETE" });
+}

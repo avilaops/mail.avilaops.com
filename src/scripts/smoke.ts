@@ -472,5 +472,63 @@ console.log("\n[dns] Provedor de DNS pelos servidores de nome");
   check("sem servidores volta nulo", provedorPelosNs([], "x.com") === null);
 }
 
+console.log("\n[dns] Plano de publicacao na Cloudflare");
+{
+  const { planejarPublicacao, spfComInclude } = await import("../services/publicacaoDns.js");
+  const { dnsRecordsFor } = await import("../services/provisioning.js");
+  const dominio = "cliente.com.br";
+  const desejados = dnsRecordsFor(dominio, "avila1");
+  const cname = desejados.find((d) => d.type === "CNAME")!;
+  const spfNosso = desejados.find((d) => d.type === "TXT" && d.host === "@")!.value;
+  const include = spfNosso.split(" ").find((t) => t.startsWith("include:"))!;
+  const estados = (p: { registro: string; estado: string }[]) => p.map((x) => `${x.registro}:${x.estado}`).join(" ");
+  const reg = (type: string, name: string, content: string, id = `${type}-${name}-${content}`) => ({ id, type, name, content });
+
+  const vazia = planejarPublicacao(dominio, desejados, [], { substituirMx: false });
+  check("zona vazia: cria os quatro", estados(vazia) === "mx:criado spf:criado dkim:criado dmarc:criado", estados(vazia));
+  check("zona vazia: quatro operacoes, todas de criar", vazia.flatMap((p) => p.operacoes).length === 4 && vazia.every((p) => p.operacoes.every((o) => o.tipo === "criar")));
+
+  const pronta = planejarPublicacao(
+    dominio,
+    desejados,
+    [
+      reg("MX", dominio, "mail.avilaops.com"),
+      reg("TXT", dominio, `"${spfNosso}"`),
+      reg("TXT", dominio, "google-site-verification=abc"),
+      reg("CNAME", `avila1._domainkey.${dominio}`, `${cname.value}.`),
+      reg("TXT", `_dmarc.${dominio}`, "v=DMARC1; p=reject"),
+    ],
+    { substituirMx: false },
+  );
+  check("zona pronta: nada a fazer", pronta.flatMap((p) => p.operacoes).length === 0, estados(pronta));
+  check("DMARC do cliente fica como esta", pronta.find((p) => p.registro === "dmarc")?.estado === "mantido");
+
+  const comOutroMx = [reg("MX", dominio, "aspmx.l.google.com", "mx-google"), reg("TXT", dominio, "v=spf1 include:_spf.google.com ~all", "spf-google")];
+  const semConfirmar = planejarPublicacao(dominio, desejados, comOutroMx, { substituirMx: false });
+  const mx = semConfirmar.find((p) => p.registro === "mx")!;
+  check("MX de outro provedor: pede confirmacao e nao mexe", mx.estado === "precisa_confirmar" && mx.operacoes.length === 0, mx.estado);
+  const spf = semConfirmar.find((p) => p.registro === "spf")!;
+  const opSpf = spf.operacoes[0];
+  check(
+    "SPF existente: atualiza o mesmo registro, mantendo o que havia",
+    spf.operacoes.length === 1 && opSpf?.tipo === "atualizar" && opSpf.id === "spf-google" && opSpf.novo.content === `v=spf1 include:_spf.google.com ${include} ~all`,
+    opSpf && "novo" in opSpf ? opSpf.novo.content : "",
+  );
+
+  const confirmado = planejarPublicacao(dominio, desejados, comOutroMx, { substituirMx: true }).find((p) => p.registro === "mx")!;
+  check(
+    "MX confirmado: apaga o antigo e cria o nosso",
+    confirmado.estado === "atualizado" && confirmado.operacoes.map((o) => o.tipo).join(",") === "apagar,criar",
+    confirmado.operacoes.map((o) => o.tipo).join(","),
+  );
+
+  const dkimVelho = planejarPublicacao(dominio, desejados, [reg("TXT", `avila1._domainkey.${dominio}`, "v=DKIM1; p=velha", "txt-velho")], { substituirMx: false }).find((p) => p.registro === "dkim")!;
+  check("DKIM: registro de outro tipo no mesmo nome sai antes do CNAME", dkimVelho.operacoes.map((o) => o.tipo).join(",") === "apagar,criar");
+
+  check("include entra antes do all", spfComInclude("v=spf1 ip4:1.2.3.4 -all", include) === `v=spf1 ip4:1.2.3.4 ${include} -all`);
+  check("include nao e repetido", spfComInclude(spfNosso, include) === spfNosso);
+  check("SPF sem all ganha o include no fim", spfComInclude("v=spf1 a mx", include) === `v=spf1 a mx ${include}`);
+}
+
 console.log(`\n${failed === 0 ? "PASSOU" : "FALHOU"} — ${passed} verificacoes ok, ${failed} falhas\n`);
 process.exit(failed === 0 ? 0 : 1);

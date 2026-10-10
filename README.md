@@ -226,7 +226,12 @@ redefinir senha, quota, suspender/reativar/excluir, aliases e catch-all, com um 
 fila, aquecimento e cobrança no topo. Na seção de DNS, o painel
 consulta os servidores de nome do domínio e mostra um botão que abre o DNS dele no
 provedor (Cloudflare, Registro.br, GoDaddy, Hostinger, Namecheap e Porkbun,
-`src/lib/provedorDns.ts`); provedor fora da lista aparece só com os servidores de nome. As rotas `/v1/admin/*` autenticam pela **sessão**;
+`src/lib/provedorDns.ts`); provedor fora da lista aparece só com os servidores de nome.
+Quando a zona está na conta da Cloudflare da Avila Ops (a mesma credencial que publica o
+DKIM na nossa zona), aparece **Publicar na Cloudflare**: grava os registros e verifica em
+seguida (`src/services/publicacaoDns.ts`). O que já existe na zona é respeitado: MX que
+aponta para outro provedor só é trocado depois de confirmação na tela, SPF existente
+ganha o nosso `include` sem perder o resto, DMARC já publicado fica como está. As rotas `/v1/admin/*` autenticam pela **sessão**;
 chave de API não entra (administrar é ação de gente logada, com 2FA se tiver).
 
 | Método | Rota | Uso |
@@ -236,6 +241,7 @@ chave de API não entra (administrar é ação de gente logada, com 2FA se tiver
 | POST | `/v1/admin/domains` | Provisiona domínio (gera DKIM) |
 | GET | `/v1/admin/domains/{d}` | Registros DNS, caixas, aliases e catch-all |
 | POST | `/v1/admin/domains/{d}/verify` | Confere MX/SPF/DKIM/DMARC e ativa |
+| POST | `/v1/admin/domains/{d}/publish-dns` | Publica os registros na Cloudflare quando a zona está na conta da casa; `{substituirMx: true}` troca um MX que aponta para outro lugar |
 | POST | `/v1/admin/domains/{d}/catch-all` | `{username}` ou `{username: null}` |
 | POST | `/v1/admin/mailboxes` | Cria caixa; sem `password` gera e devolve uma vez |
 | POST | `/v1/admin/mailboxes/{suspend,reactivate,delete,password,quota,owner}` | Ações da caixa |
