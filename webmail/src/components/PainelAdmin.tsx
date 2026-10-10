@@ -68,6 +68,9 @@ interface Detalhe {
   domain: string;
   status: string;
   dnsRecords: RegistroDns[];
+  /** Provedor onde o DNS do domínio está, identificado pelos servidores de nome. */
+  dnsProvedor: { id: string; nome: string; preposicao: "na" | "no"; url: string; direto: boolean } | null;
+  dnsServidores: string[];
   dnsCheck: Checagem | null;
   mailboxes: Caixa[];
   aliases: Alias[];
@@ -561,6 +564,11 @@ function DetalheDominio({ detalhe, ocupado, executar, recarregar, setAviso }: De
                 <SeloDns ok={detalhe.dnsCheck.dmarc} rotulo="DMARC" />
               </>
             )}
+            {detalhe.dnsProvedor && (
+              <a href={detalhe.dnsProvedor.url} target="_blank" rel="noreferrer" className={SECUNDARIO}>
+                Abrir o DNS {detalhe.dnsProvedor.preposicao} {detalhe.dnsProvedor.nome}
+              </a>
+            )}
             <button
               type="button"
               disabled={ocupado}
@@ -587,6 +595,15 @@ function DetalheDominio({ detalhe, ocupado, executar, recarregar, setAviso }: De
           </div>
         }
       >
+        <p className="mb-2 text-[11px] text-[var(--color-texto-fraco)]">
+          {detalhe.dnsProvedor
+            ? detalhe.dnsProvedor.direto
+              ? `O DNS deste domínio está ${detalhe.dnsProvedor.preposicao} ${detalhe.dnsProvedor.nome}. O botão abre a zona dele; é preciso estar logado na conta dona do domínio.`
+              : `O DNS deste domínio está ${detalhe.dnsProvedor.preposicao} ${detalhe.dnsProvedor.nome}. O botão abre o painel; escolha o domínio e a edição de DNS.`
+            : detalhe.dnsServidores.length > 0
+              ? `Servidores de nome deste domínio: ${detalhe.dnsServidores.join(", ")}. Publique os registros no painel de quem os administra.`
+              : "Este domínio ainda não tem servidores de nome no ar. Aponte-o para um provedor de DNS antes de publicar os registros."}
+        </p>
         <div className="overflow-hidden rounded-lg border border-[var(--color-borda)] bg-[var(--color-superficie)]">
           <table className="w-full text-left text-xs">
             <thead>

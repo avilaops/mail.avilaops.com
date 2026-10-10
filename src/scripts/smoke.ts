@@ -450,5 +450,27 @@ console.log("[higiene+4] Conferencia diaria de DNS: gravidade e politica DMARC")
   check("DMARC sem p= conta como none", politicaNoRegistro(["v=DMARC1; rua=mailto:a@b.com"]) === "none");
 }
 
+console.log("\n[dns] Provedor de DNS pelos servidores de nome");
+{
+  const { provedorPelosNs } = await import("../lib/provedorDns.js");
+  const cf = provedorPelosNs(["DONALD.NS.CLOUDFLARE.COM.", "dora.ns.cloudflare.com."], "Vedashow.com.br");
+  check("Cloudflare reconhecida, com ponto final e maiusculas", cf?.id === "cloudflare");
+  check(
+    "link da Cloudflare abre a zona do dominio",
+    cf?.url === "https://dash.cloudflare.com/?to=/:account/vedashow.com.br/dns/records" && cf.direto === true,
+    cf?.url,
+  );
+  const rb = provedorPelosNs(["a.auto.dns.br", "b.auto.dns.br"], "exemplo.com.br");
+  check("Registro.br reconhecido pelo DNS hospedado", rb?.id === "registrobr" && rb.direto === false && rb.preposicao === "no");
+  check("NS da zona com.br nao e tratado como Registro.br", provedorPelosNs(["a.dns.br", "b.dns.br"], "com.br") === null);
+  check(
+    "GoDaddy leva o dominio no link",
+    provedorPelosNs(["ns01.domaincontrol.com"], "loja.com")?.url === "https://dcc.godaddy.com/control/dnsmanagement?domainName=loja.com",
+  );
+  check("sufixo parecido nao engana", provedorPelosNs(["ns1.fakens.cloudflare.com.evil.io"], "x.com") === null);
+  check("provedor desconhecido volta nulo", provedorPelosNs(["ns1.exemplo-dns.net"], "x.com") === null);
+  check("sem servidores volta nulo", provedorPelosNs([], "x.com") === null);
+}
+
 console.log(`\n${failed === 0 ? "PASSOU" : "FALHOU"} — ${passed} verificacoes ok, ${failed} falhas\n`);
 process.exit(failed === 0 ? 0 : 1);
