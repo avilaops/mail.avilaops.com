@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { config } from "../lib/config.js";
 import { prisma } from "../lib/db.js";
+import { descobrirDnsDoDominio } from "../lib/provedorDns.js";
 import { generatePassword } from "../lib/password.js";
 import { orcamentoDeHoje } from "../mta/warmup.js";
 import { fail, json, readBody } from "./http.js";
@@ -114,16 +115,20 @@ async function detalheDominio(domainName: string) {
     select: { name: true, status: true, dkimSelector: true, dnsCheck: true, dnsCheckedAt: true },
   });
   if (!dominio) return null;
-  const [mailboxes, aliases, catchAll, encaminharTudo] = await Promise.all([
+  const [mailboxes, aliases, catchAll, encaminharTudo, dns] = await Promise.all([
     listMailboxes(dominio.name),
     listAliases(dominio.name),
     getCatchAll(dominio.name),
     getEncaminharTudo(dominio.name),
+    descobrirDnsDoDominio(dominio.name),
   ]);
   return {
     domain: dominio.name,
     status: dominio.status,
     dnsRecords: dnsRecordsFor(dominio.name, dominio.dkimSelector),
+    // Onde publicar os registros: provedor identificado pelos servidores de nome.
+    dnsProvedor: dns.provedor,
+    dnsServidores: dns.servidores,
     dnsCheck: dominio.dnsCheck,
     dnsCheckedAt: dominio.dnsCheckedAt,
     mailboxes,

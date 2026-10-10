@@ -223,7 +223,10 @@ Caixas listadas em `MAIL_ADMIN_ADDRESSES` (endereço ou dono no SSO) veem o link
 **Administração** e fazem pela tela tudo que a API de provisionamento faz: provisionar
 domínio e copiar/verificar os registros DNS, criar caixa (senha gerada, exibida uma vez),
 redefinir senha, quota, suspender/reativar/excluir, aliases e catch-all, com um resumo de
-fila, aquecimento e cobrança no topo. As rotas `/v1/admin/*` autenticam pela **sessão**;
+fila, aquecimento e cobrança no topo. Na seção de DNS, o painel
+consulta os servidores de nome do domínio e mostra um botão que abre o DNS dele no
+provedor (Cloudflare, Registro.br, GoDaddy, Hostinger, Namecheap e Porkbun,
+`src/lib/provedorDns.ts`); provedor fora da lista aparece só com os servidores de nome. As rotas `/v1/admin/*` autenticam pela **sessão**;
 chave de API não entra (administrar é ação de gente logada, com 2FA se tiver).
 
 | Método | Rota | Uso |
