@@ -123,7 +123,10 @@ export function planejarPublicacao(
     if (d.type === "CNAME") {
       const novo: RegistroNovo = { type: "CNAME", name: nome, content: d.value };
       const atuais = doNome(nome);
-      if (atuais.length === 1 && atuais[0]!.type === "CNAME" && igual(atuais[0]!.content, d.value)) {
+      // CNAME certo no ar: nao se mexe, mesmo com outro registro sobrando no
+      // nome. O saudepet.app.br tem o CNAME e um TXT antigo lado a lado na
+      // Cloudflare; apagar e recriar o CNAME abriria uma janela sem DKIM.
+      if (atuais.some((e) => e.type === "CNAME" && igual(e.content, d.value))) {
         passos.push({ registro: "dkim", estado: "ja_estava", operacoes: [] });
       } else if (atuais.length === 0) {
         passos.push({ registro: "dkim", estado: "criado", operacoes: [{ tipo: "criar", novo }] });

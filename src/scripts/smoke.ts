@@ -525,6 +525,14 @@ console.log("\n[dns] Plano de publicacao na Cloudflare");
   const dkimVelho = planejarPublicacao(dominio, desejados, [reg("TXT", `avila1._domainkey.${dominio}`, "v=DKIM1; p=velha", "txt-velho")], { substituirMx: false }).find((p) => p.registro === "dkim")!;
   check("DKIM: registro de outro tipo no mesmo nome sai antes do CNAME", dkimVelho.operacoes.map((o) => o.tipo).join(",") === "apagar,criar");
 
+  const dkimComSobra = planejarPublicacao(
+    dominio,
+    desejados,
+    [reg("CNAME", `avila1._domainkey.${dominio}`, cname.value), reg("TXT", `avila1._domainkey.${dominio}`, "v=DKIM1; p=antiga")],
+    { substituirMx: false },
+  ).find((p) => p.registro === "dkim")!;
+  check("DKIM: CNAME certo com TXT antigo ao lado nao e tocado", dkimComSobra.estado === "ja_estava" && dkimComSobra.operacoes.length === 0, dkimComSobra.estado);
+
   check("include entra antes do all", spfComInclude("v=spf1 ip4:1.2.3.4 -all", include) === `v=spf1 ip4:1.2.3.4 ${include} -all`);
   check("include nao e repetido", spfComInclude(spfNosso, include) === spfNosso);
   check("SPF sem all ganha o include no fim", spfComInclude("v=spf1 a mx", include) === `v=spf1 a mx ${include}`);
