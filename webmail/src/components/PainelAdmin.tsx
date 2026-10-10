@@ -71,6 +71,8 @@ interface Detalhe {
   /** Provedor onde o DNS do domínio está, identificado pelos servidores de nome. */
   dnsProvedor: { id: string; nome: string; preposicao: "na" | "no"; url: string; direto: boolean } | null;
   dnsServidores: string[];
+  /** A zona está na conta da Cloudflare da casa: dá para publicar daqui. */
+  dnsPublicavel: boolean;
   dnsCheck: Checagem | null;
   mailboxes: Caixa[];
   aliases: Alias[];
@@ -547,6 +549,42 @@ function DetalheDominio({ detalhe, ocupado, executar, recarregar, setAviso }: De
   const [editandoQuota, setEditandoQuota] = useState<string | null>(null);
   const [quotaNova, setQuotaNova] = useState("");
   const [confirmandoExclusao, setConfirmandoExclusao] = useState<string | null>(null);
+  /** Aviso do MX que já existe; preenchido quando a publicação pede confirmação. */
+  const [confirmarMx, setConfirmarMx] = useState<string | null>(null);
+
+  const ROTULO: Record<string, string> = {
+    criado: "criado",
+    atualizado: "atualizado",
+    ja_estava: "já estava",
+    mantido: "mantido como estava",
+    precisa_confirmar: "aguardando confirmação",
+    falhou: "falhou",
+  };
+
+  /** Publica os registros na Cloudflare. O MX que aponta para outro lugar só é trocado com `substituirMx`. */
+  function publicar(substituirMx: boolean) {
+    void executar(async () => {
+      const r = await api<{
+        ready: boolean;
+        registros: { registro: string; estado: string; detalhe?: string }[];
+      }>(`/admin/domains/${encodeURIComponent(dominio)}/publish-dns`, { method: "POST", body: JSON.stringify({ substituirMx }) });
+      const mx = r.registros.find((x) => x.estado === "precisa_confirmar");
+      setConfirmarMx(mx?.detalhe ?? null);
+      const falhas = r.registros.filter((x) => x.estado === "falhou");
+      setAviso({
+        tom: falhas.length > 0 || mx ? "erro" : "ok",
+        titulo: mx
+          ? `${dominio}: publicado, menos o MX`
+          : falhas.length > 0
+            ? `${dominio}: nem tudo foi publicado`
+            : r.ready
+              ? `${dominio}: DNS publicado e domínio ativo`
+              : `${dominio}: DNS publicado; a verificação pode levar alguns minutos`,
+        texto: r.registros.map((x) => `${x.registro.toUpperCase()} ${ROTULO[x.estado] ?? x.estado}${x.estado === "falhou" && x.detalhe ? ` (${x.detalhe})` : ""}`).join(" · "),
+      });
+      await recarregar();
+    });
+  }
 
   return (
     <div className="space-y-7">
@@ -563,6 +601,11 @@ function DetalheDominio({ detalhe, ocupado, executar, recarregar, setAviso }: De
                 <SeloDns ok={detalhe.dnsCheck.dkim} rotulo="DKIM" />
                 <SeloDns ok={detalhe.dnsCheck.dmarc} rotulo="DMARC" />
               </>
+            )}
+            {detalhe.dnsPublicavel && (
+              <button type="button" disabled={ocupado} className={SECUNDARIO} onClick={() => publicar(false)}>
+                Publicar na Cloudflare
+              </button>
             )}
             {detalhe.dnsProvedor && (
               <a href={detalhe.dnsProvedor.url} target="_blank" rel="noreferrer" className={SECUNDARIO}>
@@ -595,7 +638,24 @@ function DetalheDominio({ detalhe, ocupado, executar, recarregar, setAviso }: De
           </div>
         }
       >
+        {confirmarMx && (
+          <div role="alert" className="mb-2 rounded-lg border border-[var(--color-borda)] bg-[var(--color-superficie)] p-3 text-xs">
+            <p className="font-medium">O MX não foi trocado.</p>
+            <p className="mt-1 text-[var(--color-texto-fraco)]">
+              {confirmarMx} Crie as caixas aqui antes de trocar, para nenhuma mensagem voltar.
+            </p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <button type="button" disabled={ocupado} className={PERIGO} onClick={() => publicar(true)}>
+                Trocar o MX agora
+              </button>
+              <button type="button" className={SECUNDARIO} onClick={() => setConfirmarMx(null)}>
+                Deixar como está
+              </button>
+            </div>
+          </div>
+        )}
         <p className="mb-2 text-[11px] text-[var(--color-texto-fraco)]">
+          {detalhe.dnsPublicavel && "Esta zona está na conta da Cloudflare da Avila Ops: “Publicar na Cloudflare” grava os registros e verifica em seguida. "}
           {detalhe.dnsProvedor
             ? detalhe.dnsProvedor.direto
               ? `O DNS deste domínio está ${detalhe.dnsProvedor.preposicao} ${detalhe.dnsProvedor.nome}. O botão abre a zona dele; é preciso estar logado na conta dona do domínio.`
