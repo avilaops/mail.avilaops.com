@@ -664,7 +664,24 @@ function DetalheDominio({ detalhe, ocupado, executar, recarregar, setAviso }: De
               ? `Servidores de nome deste domínio: ${detalhe.dnsServidores.join(", ")}. Publique os registros no painel de quem os administra.`
               : "Este domínio ainda não tem servidores de nome no ar. Aponte-o para um provedor de DNS antes de publicar os registros."}
         </p>
-        <div className="overflow-hidden rounded-lg border border-[var(--color-borda)] bg-[var(--color-superficie)]">
+        {/* Celular: um cartão por registro. Na tabela, o valor e o botão de copiar ficavam cortados fora da tela. */}
+        <ul className="divide-y divide-[var(--color-borda)] overflow-hidden rounded-lg border border-[var(--color-borda)] bg-[var(--color-superficie)] sm:hidden">
+          {detalhe.dnsRecords.map((r) => (
+            <li key={`${r.type}-${r.host}`} className="flex items-start gap-2 px-3 py-2.5 text-xs">
+              <div className="min-w-0 flex-1">
+                <div className="font-mono">
+                  {r.type}
+                  {r.priority !== undefined && <span className="ml-1 text-[var(--color-texto-fraco)]">prio {r.priority}</span>}
+                  <span className="ml-2 text-[var(--color-texto-fraco)]">{r.host}</span>
+                </div>
+                <div className="mt-1 break-all font-mono">{r.value}</div>
+                <div className="mt-0.5 text-[11px] text-[var(--color-texto-fraco)]">{r.purpose}</div>
+              </div>
+              <Copiar texto={r.value} />
+            </li>
+          ))}
+        </ul>
+        <div className="hidden overflow-hidden rounded-lg border border-[var(--color-borda)] bg-[var(--color-superficie)] sm:block">
           <table className="w-full text-left text-xs">
             <thead>
               <tr className="border-b border-[var(--color-borda)] text-[11px] uppercase tracking-wide text-[var(--color-texto-fraco)]">
