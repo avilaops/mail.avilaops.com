@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
   title: "E-mail com o domínio da sua empresa | Ávila Mail",
   description:
-    "Caixa de e-mail profissional no servidor próprio da Ávila Ops: webmail, IMAP, contatos e agenda, com os e-mails antigos trazidos do provedor atual.",
+    "R$ 10 por caixa, por mês, no servidor próprio da Ávila Ops. Webmail, IMAP, contatos, agenda e os e-mails antigos trazidos do provedor atual.",
   robots: { index: true, follow: true },
   alternates: { canonical: "/" },
 };
