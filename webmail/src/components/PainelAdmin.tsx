@@ -747,7 +747,8 @@ function DetalheDominio({ detalhe, ocupado, executar, recarregar, setAviso }: De
 
                       <Uso usadoMb={c.usedMb} quotaGb={c.quotaGb} />
 
-                      <div className="flex shrink-0 items-center gap-1.5">
+                      {/* No celular os quatro botões não cabem numa linha: quebram, em vez de o último sair da tela. */}
+                      <div className="flex w-full flex-wrap items-center gap-1.5 sm:w-auto sm:shrink-0">
                         <button
                           type="button"
                           disabled={ocupado}
