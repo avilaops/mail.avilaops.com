@@ -172,3 +172,10 @@ Mandatory first step: Analyze the user's request and project state. Select a wor
 3. Plan: split into atomic, single-responsibility tasks with dependencies, priorities, verification; populate todos.
 4. Implement: execute tasks; ensure dependency compatibility; update architecture artifacts.
 5. Verify: validate against design; run Self Reflection. If scores < thresholds → return to Design. Update status.
+
+## Controle da equipe
+
+Para coordenar demandas deste projeto, leia [.agents/equipe/README.md](.agents/equipe/README.md).
+O registro de responsaveis, tarefas, decisoes e integracoes fica em `.agents/equipe/controle.json`.
+A skill de coordenacao esta em `.agents/skills/avila-mail-avilaops-com-equipe/SKILL.md`.
+Mantenha evidencias e estado atualizados; as regras especificas deste repositorio continuam valendo.
