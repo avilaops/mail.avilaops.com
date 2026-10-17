@@ -21,24 +21,19 @@ mail.avilaops.com {
 	# /api/cadastro sao rotas BFF do webmail (Next) e ficam no handle geral.
 	handle /api/v1/* {
 		uri strip_prefix /api
-		reverse_proxy 127.0.0.1:3040
+		reverse_proxy 127.0.0.1:3042
 	}
 
 	# CardDAV/CalDAV (contatos e agenda). Basic auth sobre o TLS daqui;
 	# os well-known sao a descoberta automatica do iOS/macOS (RFC 6764).
-	handle /dav/* {
-		reverse_proxy 127.0.0.1:3040
-	}
-	handle /.well-known/carddav {
-		reverse_proxy 127.0.0.1:3040
-	}
-	handle /.well-known/caldav {
-		reverse_proxy 127.0.0.1:3040
+	@dav path /dav /dav/* /.well-known/carddav /.well-known/caldav
+	handle @dav {
+		reverse_proxy 127.0.0.1:3042
 	}
 
-	# Webmail (Fase 2). Ate subir, responde 503 em vez de 502 do Caddy.
+	# Webmail e BFF Next.js.
 	handle {
-		respond "Webmail Avila Ops em implantacao." 503
+		reverse_proxy 127.0.0.1:3041
 	}
 
 	header {
