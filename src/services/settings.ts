@@ -144,6 +144,106 @@ export async function updateSettings(mailboxId: string, input: UpdateSettingsInp
   return salvo;
 }
 
+const CAMPOS_AGENDA = {
+  calendarTimezone: true,
+  calendarWeekStart: true,
+  calendarBusinessHoursStart: true,
+  calendarBusinessHoursEnd: true,
+  calendarDefaultView: true,
+  calendarDefaultReminder: true,
+  calendarDefaultAllDayReminder: true,
+} as const;
+
+const PADROES_AGENDA = {
+  timezone: "America/Sao_Paulo",
+  weekStart: 0 as 0 | 1,
+  businessHoursStart: "09:00",
+  businessHoursEnd: "18:00",
+  defaultView: "week" as const,
+  defaultReminder: 10,
+  defaultAllDayReminder: 1440,
+};
+
+export interface CalendarSettingsInput {
+  timezone?: string;
+  weekStart?: 0 | 1;
+  businessHoursStart?: string;
+  businessHoursEnd?: string;
+  defaultView?: "day" | "week" | "month" | "list";
+  defaultReminder?: number;
+  defaultAllDayReminder?: number;
+}
+
+function respostaAgenda(valor: Record<string, unknown>) {
+  return {
+    timezone: String(valor.calendarTimezone),
+    weekStart: Number(valor.calendarWeekStart) as 0 | 1,
+    businessHoursStart: String(valor.calendarBusinessHoursStart),
+    businessHoursEnd: String(valor.calendarBusinessHoursEnd),
+    defaultView: String(valor.calendarDefaultView) as "day" | "week" | "month" | "list",
+    defaultReminder: Number(valor.calendarDefaultReminder),
+    defaultAllDayReminder: Number(valor.calendarDefaultAllDayReminder),
+  };
+}
+
+function minutosHorario(valor: string): number | null {
+  const encontrado = valor.match(/^(\d{2}):(\d{2})$/);
+  if (!encontrado) return null;
+  const hora = Number(encontrado[1]);
+  const minuto = Number(encontrado[2]);
+  return hora <= 23 && minuto <= 59 ? hora * 60 + minuto : null;
+}
+
+export async function getCalendarSettings(mailboxId: string) {
+  const existente = await prisma.mailboxSettings.findUnique({ where: { mailboxId }, select: CAMPOS_AGENDA });
+  return existente ? respostaAgenda(existente) : PADROES_AGENDA;
+}
+
+export async function updateCalendarSettings(mailboxId: string, input: CalendarSettingsInput) {
+  const atual = await getCalendarSettings(mailboxId);
+  const proximo = { ...atual, ...input };
+  try {
+    new Intl.DateTimeFormat("pt-BR", { timeZone: proximo.timezone }).format();
+  } catch {
+    throw new MessageError("Fuso horario invalido.", 422);
+  }
+  const inicio = minutosHorario(proximo.businessHoursStart);
+  const fim = minutosHorario(proximo.businessHoursEnd);
+  if (inicio === null || fim === null || inicio >= fim) {
+    throw new MessageError("Horario de expediente invalido: o inicio deve vir antes do fim.", 422);
+  }
+  for (const valor of [proximo.defaultReminder, proximo.defaultAllDayReminder]) {
+    if (!Number.isInteger(valor) || valor < 0 || valor > 525_600) {
+      throw new MessageError("Lembrete padrao deve ficar entre 0 e 525600 minutos.", 422);
+    }
+  }
+  const salvo = await prisma.mailboxSettings.upsert({
+    where: { mailboxId },
+    create: {
+      mailboxId,
+      calendarTimezone: proximo.timezone,
+      calendarWeekStart: proximo.weekStart,
+      calendarBusinessHoursStart: proximo.businessHoursStart,
+      calendarBusinessHoursEnd: proximo.businessHoursEnd,
+      calendarDefaultView: proximo.defaultView,
+      calendarDefaultReminder: proximo.defaultReminder,
+      calendarDefaultAllDayReminder: proximo.defaultAllDayReminder,
+    },
+    update: {
+      calendarTimezone: proximo.timezone,
+      calendarWeekStart: proximo.weekStart,
+      calendarBusinessHoursStart: proximo.businessHoursStart,
+      calendarBusinessHoursEnd: proximo.businessHoursEnd,
+      calendarDefaultView: proximo.defaultView,
+      calendarDefaultReminder: proximo.defaultReminder,
+      calendarDefaultAllDayReminder: proximo.defaultAllDayReminder,
+    },
+    select: CAMPOS_AGENDA,
+  });
+  log.info("preferencias da agenda atualizadas", { mailboxId });
+  return respostaAgenda(salvo);
+}
+
 export interface UpdateProfileInput {
   displayName?: string | null;
   recoveryEmail?: string | null;

@@ -63,9 +63,9 @@ export function origemDaRequisicao(request: { headers: Headers }): OrigemCliente
 
 export async function chamarApi<T>(
   caminho: string,
-  opcoes: { method?: string; body?: unknown; token?: string | null; origem?: OrigemCliente } = {},
+  opcoes: { method?: string; body?: unknown; token?: string | null; origem?: OrigemCliente; headers?: Record<string, string> } = {},
 ): Promise<RespostaApi<T>> {
-  const cabecalhos: Record<string, string> = { Accept: "application/json" };
+  const cabecalhos: Record<string, string> = { Accept: "application/json", ...opcoes.headers };
   if (opcoes.token) cabecalhos.Authorization = `Bearer ${opcoes.token}`;
   if (opcoes.body !== undefined) cabecalhos["Content-Type"] = "application/json";
   if (opcoes.origem?.ip) cabecalhos["x-forwarded-for"] = opcoes.origem.ip;
@@ -98,7 +98,7 @@ export async function chamarApi<T>(
  */
 export async function chamarComSessao<T>(
   caminho: string,
-  opcoes: { method?: string; body?: unknown; origem?: OrigemCliente } = {},
+  opcoes: { method?: string; body?: unknown; origem?: OrigemCliente; headers?: Record<string, string> } = {},
 ): Promise<RespostaApi<T>> {
   const acesso = await tokenDeAcesso();
 

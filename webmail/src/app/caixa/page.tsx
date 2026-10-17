@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { PainelCaixa } from "@/components/PainelCaixa";
 import { temSessao } from "@/lib/sessao";
+import { agendaDisponivel } from "@/lib/agendaFeature";
 
 /** Dinamica pelo nonce da CSP — ver comentario em `app/entrar/page.tsx`. */
 export const dynamic = "force-dynamic";
@@ -10,5 +11,5 @@ export default async function Caixa() {
   // ela descobrir o 401 na primeira chamada e redirecionar depois.
   if (!(await temSessao())) redirect("/entrar");
 
-  return <PainelCaixa />;
+  return <PainelCaixa agendaHabilitada={await agendaDisponivel()} />;
 }

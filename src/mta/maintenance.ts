@@ -9,6 +9,7 @@ import { cleanupStaleUploads } from "../services/uploads.js";
 import { getSystemFolder } from "../services/folders.js";
 import { manutencaoDoSelfService } from "../services/signupCheckout.js";
 import { manutencaoDaConferenciaDeDns } from "../services/conferenciaDeDns.js";
+import { limparLapidesDav } from "../dav/store.js";
 
 const log = createLogger("manutencao");
 
@@ -88,7 +89,7 @@ export async function rodarManutencao(): Promise<void> {
   const inicio = Date.now();
 
   try {
-    const [sessoes, tokens, respostas, uploads, lixeira, fila, selfService, dns] = await Promise.all([
+    const [sessoes, tokens, respostas, uploads, lixeira, fila, selfService, dns, lapidesDav] = await Promise.all([
       cleanupExpired(),
       cleanupExpiredTokens(),
       cleanupAutoReplyLog(),
@@ -104,6 +105,7 @@ export async function rodarManutencao(): Promise<void> {
       // Sem isso, DNS de cliente quebra em silencio — foi o que aconteceu com
       // tres dominios que passaram meses enviando sem DKIM.
       manutencaoDaConferenciaDeDns(),
+      limparLapidesDav(),
     ]);
 
     log.info("faxina concluida", {
@@ -124,6 +126,8 @@ export async function rodarManutencao(): Promise<void> {
       dominiosCriticos: dns.criticos,
       dnsRegressoes: dns.regressoes,
       dnsAvisoEnviado: dns.avisoEnviado,
+      lapidesContatos: lapidesDav.contacts,
+      lapidesAgenda: lapidesDav.calendar,
       duracaoMs: Date.now() - inicio,
     });
   } catch (error) {

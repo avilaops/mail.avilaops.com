@@ -25,6 +25,18 @@ jobs:
       - run: npm ci
       - run: npx prisma generate
       - run: npm test
+      - run: npm ci
+        working-directory: webmail
+      - run: npm run test:calendar
+        working-directory: webmail
+      - run: npm run lint
+        working-directory: webmail
+      - run: npm run typecheck
+        working-directory: webmail
+      - run: npm run build
+        working-directory: webmail
+        env:
+          AGENDA_ENABLED: all
   api:
     needs: verify
     permissions:

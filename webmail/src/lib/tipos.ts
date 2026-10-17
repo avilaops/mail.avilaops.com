@@ -43,6 +43,25 @@ export interface MensagemCompleta extends ResumoMensagem {
   bodyHtml: string | null;
   blockedRemoteImages: number;
   attachments: Anexo[];
+  convite: ConviteMensagem | null;
+}
+
+export interface ConviteMensagem {
+  metodo: "REQUEST" | "CANCEL";
+  uid: string;
+  titulo: string;
+  inicio: string;
+  fim: string;
+  diaInteiro: boolean;
+  local?: string;
+  organizador?: string;
+  minhaResposta: "pendente" | "aceito" | "recusado" | "talvez";
+  sequencia: number;
+  conflito: boolean;
+  cancelado: boolean;
+  recorrenciaId?: string;
+  cancelamento?: "aplicado" | "obsoleto" | "nao_confiavel" | "novo";
+  alteracoes: string[];
 }
 
 export interface Caixa {
@@ -60,4 +79,62 @@ export interface Caixa {
 export interface PaginaMensagens {
   messages: ResumoMensagem[];
   nextCursor: string | null;
+}
+
+export interface ConvidadoAgenda {
+  email: string;
+  nome?: string;
+  resposta: "pendente" | "aceito" | "recusado" | "talvez";
+}
+
+export interface DadosEventoAgenda {
+  agendaId?: string;
+  titulo: string;
+  inicio: string;
+  fim: string;
+  diaInteiro: boolean;
+  fuso: string;
+  local?: string;
+  descricao?: string;
+  recorrencia?: string;
+  lembretes: Array<{ minutosAntes: number }>;
+  convidados: ConvidadoAgenda[];
+  organizador?: string;
+  disponibilidade: "ocupado" | "livre";
+  origem?: string;
+  linkOrigem?: string;
+}
+
+export interface EventoAgenda extends DadosEventoAgenda {
+  agendaId?: string;
+  cor?: string;
+  id: string;
+  uid: string;
+  href: string;
+  etag: string;
+  sequencia: number;
+  criadoEm: string;
+  modificadoEm: string;
+  dtstamp: string;
+  /** Presente nas respostas de janela, inclusive para a primeira ocorrência. */
+  recorrenciaId?: string;
+}
+
+export interface AgendaCalendario {
+  id: string;
+  nome: string;
+  cor: string;
+  ordem: number;
+  padrao: boolean;
+  quantidadeEventos: number;
+}
+
+export interface PreferenciasAgenda {
+  timezone: string;
+  weekStart: 0 | 1;
+  businessHoursStart: string;
+  businessHoursEnd: string;
+  defaultView: "day" | "week" | "month" | "list";
+  defaultReminder: number;
+  defaultAllDayReminder: number;
 }

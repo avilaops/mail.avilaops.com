@@ -68,8 +68,9 @@ export async function storeUpload(input: UploadInput) {
   // checagem, um upload corrompido viraria anexo de 0 byte na mensagem.
   if (conteudo.byteLength === 0) throw new MessageError("Anexo vazio ou base64 invalido.", 422);
 
-  if (conteudo.byteLength > config.limits.maxMessageBytes) {
-    const limiteMb = Math.floor(config.limits.maxMessageBytes / 1024 / 1024);
+  const limiteBytes = /^text\/calendar(?:;|$)/i.test(input.contentType ?? "") ? 50 * 1024 * 1024 : config.limits.maxMessageBytes;
+  if (conteudo.byteLength > limiteBytes) {
+    const limiteMb = Math.floor(limiteBytes / 1024 / 1024);
     throw new MessageError(`Anexo maior que o limite de ${limiteMb} MB.`, 413);
   }
 

@@ -1,0 +1,16 @@
+BEGIN:VCALENDAR
+PRODID:-//Microsoft Corporation//Outlook 16.0 MIMEDIR//EN
+VERSION:2.0
+METHOD:REQUEST
+BEGIN:VEVENT
+UID:outlook-fixture-avl50@example.com
+DTSTAMP:20360701T120000Z
+DTSTART;TZID="E. South America Standard Time":20360711T100000
+DTEND;TZID="E. South America Standard Time":20360711T110000
+SEQUENCE:4
+ORGANIZER;CN=Outlook Organizer:mailto:outlook.organizer@example.com
+ATTENDEE;CN=Mailbox;RSVP=TRUE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION:mailto:{{ATTENDEE}}
+SUMMARY:Outlook fixture meeting
+LOCATION:Microsoft Teams
+END:VEVENT
+END:VCALENDAR

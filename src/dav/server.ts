@@ -14,6 +14,10 @@ import {
   obterItem,
   obterVarios,
 } from "./store.js";
+import { expandirRecorrencias } from "./recorrencia.js";
+import { prisma } from "../lib/db.js";
+import { atualizarAgenda, excluirAgenda, garantirAgendaPadrao } from "../services/calendars.js";
+import { CalendarError } from "../services/calendar.js";
 
 const log = createLogger("dav");
 
@@ -88,8 +92,8 @@ type Recurso =
   | { tipo: "root" }
   | { tipo: "principal" }
   | { tipo: "home"; colecao: Colecao }
-  | { tipo: "colecao"; colecao: Colecao }
-  | { tipo: "item"; colecao: Colecao; href: string };
+  | { tipo: "colecao"; colecao: Colecao; agendaRef?: string }
+  | { tipo: "item"; colecao: Colecao; href: string; agendaRef?: string };
 
 const NOME_COLECAO: Record<Colecao, string> = { contacts: "contatos", calendar: "agenda" };
 const RAMO: Record<Colecao, string> = { contacts: "addressbooks", calendar: "calendars" };
@@ -105,11 +109,11 @@ function urlPrincipal(addr: string): string {
 function urlHome(colecao: Colecao, addr: string): string {
   return `/dav/${RAMO[colecao]}/${encodeURIComponent(addr)}/`;
 }
-function urlColecao(colecao: Colecao, addr: string): string {
-  return `${urlHome(colecao, addr)}${NOME_COLECAO[colecao]}/`;
+function urlColecao(colecao: Colecao, addr: string, agendaRef = NOME_COLECAO[colecao]): string {
+  return `${urlHome(colecao, addr)}${encodeURIComponent(agendaRef)}/`;
 }
-function urlItem(colecao: Colecao, addr: string, href: string): string {
-  return `${urlColecao(colecao, addr)}${encodeURIComponent(href)}`;
+function urlItem(colecao: Colecao, addr: string, href: string, agendaRef?: string): string {
+  return `${urlColecao(colecao, addr, agendaRef)}${encodeURIComponent(href)}`;
 }
 
 /**
@@ -138,9 +142,16 @@ function resolver(path: string, addr: string): Recurso | null {
   if (!colecao || dono !== addr) return null;
 
   if (nomeColecao === undefined) return { tipo: "home", colecao };
-  if (nomeColecao !== NOME_COLECAO[colecao]) return null;
-  if (itemHref === undefined) return { tipo: "colecao", colecao };
-  return { tipo: "item", colecao, href: itemHref };
+  if (colecao === "contacts" && nomeColecao !== NOME_COLECAO[colecao]) return null;
+  const agendaRef = colecao === "calendar" ? nomeColecao : undefined;
+  if (itemHref === undefined) return { tipo: "colecao", colecao, agendaRef };
+  return { tipo: "item", colecao, href: itemHref, agendaRef };
+}
+
+async function agendaDoRecurso(recurso: Recurso, mailboxId: string) {
+  if ((recurso.tipo !== "colecao" && recurso.tipo !== "item") || recurso.colecao !== "calendar") return null;
+  await garantirAgendaPadrao(mailboxId);
+  return prisma.mailCalendar.findFirst({ where: { href: recurso.agendaRef, mailboxId } });
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +163,7 @@ interface Prop {
   xml: string;
 }
 
-function propsDoRecurso(recurso: Recurso, addr: string, ctagAtual: string | null): Prop[] {
+function propsDoRecurso(recurso: Recurso, addr: string, ctagAtual: string | null, agenda?: { name: string; color: string } | null): Prop[] {
   const principal = `<d:current-user-principal><d:href>${urlPrincipal(addr)}</d:href></d:current-user-principal>`;
   const dono = `<d:owner><d:href>${urlPrincipal(addr)}</d:href></d:owner>`;
   const privilegios =
@@ -191,7 +202,7 @@ function propsDoRecurso(recurso: Recurso, addr: string, ctagAtual: string | null
   if (recurso.tipo === "home") {
     return [
       { nome: "resourcetype", xml: "<d:resourcetype><d:collection/></d:resourcetype>" },
-      { nome: "displayname", xml: `<d:displayname>${ROTULO[recurso.colecao]}</d:displayname>` },
+      { nome: "displayname", xml: `<d:displayname>${esc(agenda?.name ?? ROTULO[recurso.colecao])}</d:displayname>` },
       { nome: "owner", xml: dono },
       ...comuns,
     ];
@@ -218,6 +229,7 @@ function propsDoRecurso(recurso: Recurso, addr: string, ctagAtual: string | null
     ];
 
     if (recurso.colecao === "calendar") {
+      props.push({ nome: "calendar-color", xml: `<cal:calendar-color>${esc(agenda?.color ?? "#2563EB")}</cal:calendar-color>` });
       props.push({
         nome: "supported-calendar-component-set",
         xml: '<cal:supported-calendar-component-set><cal:comp name="VEVENT"/></cal:supported-calendar-component-set>',
@@ -278,19 +290,21 @@ async function propfind(
   corpo: string,
 ): Promise<void> {
   const pedidas = propsPedidas(corpo);
+  const agenda = await agendaDoRecurso(recurso, mailboxId);
+  if ((recurso.tipo === "colecao" || recurso.tipo === "item") && recurso.colecao === "calendar" && !agenda) throw new DavError("Agenda nao encontrada.", 404);
 
   const ctagAtual =
     recurso.tipo === "colecao" || recurso.tipo === "item"
-      ? await ctag(mailboxId, recurso.tipo === "colecao" ? recurso.colecao : recurso.colecao)
+      ? await ctag(mailboxId, recurso.colecao, agenda?.id)
       : null;
 
   const respostas: string[] = [];
 
   if (recurso.tipo === "item") {
-    const item = await obterItem(mailboxId, recurso.colecao, recurso.href);
+    const item = await obterItem(mailboxId, recurso.colecao, recurso.href, agenda?.id);
     if (!item) throw new DavError("Recurso nao encontrado.", 404);
     respostas.push(
-      montarResposta(urlItem(recurso.colecao, addr, recurso.href), propsDeItem(recurso.colecao, item.etag), pedidas),
+      montarResposta(urlItem(recurso.colecao, addr, recurso.href, recurso.agendaRef), propsDeItem(recurso.colecao, item.etag), pedidas),
     );
   } else {
     const hrefProprio =
@@ -300,22 +314,30 @@ async function propfind(
           ? urlPrincipal(addr)
           : recurso.tipo === "home"
             ? urlHome(recurso.colecao, addr)
-            : urlColecao(recurso.colecao, addr);
+            : urlColecao(recurso.colecao, addr, recurso.agendaRef);
 
-    respostas.push(montarResposta(hrefProprio, propsDoRecurso(recurso, addr, ctagAtual), pedidas));
+    respostas.push(montarResposta(hrefProprio, propsDoRecurso(recurso, addr, ctagAtual, agenda), pedidas));
 
     if (profundidade !== "0") {
       if (recurso.tipo === "home") {
-        const filho: Recurso = { tipo: "colecao", colecao: recurso.colecao };
-        const ctagFilho = await ctag(mailboxId, recurso.colecao);
-        respostas.push(
-          montarResposta(urlColecao(recurso.colecao, addr), propsDoRecurso(filho, addr, ctagFilho), pedidas),
-        );
+        if (recurso.colecao === "calendar") {
+          const agendas = await prisma.mailCalendar.findMany({ where: { mailboxId }, orderBy: [{ position: "asc" }, { createdAt: "asc" }] });
+          if (agendas.length === 0) agendas.push(await garantirAgendaPadrao(mailboxId));
+          for (const item of agendas) {
+            const ref = item.href;
+            const filho: Recurso = { tipo: "colecao", colecao: "calendar", agendaRef: ref };
+            respostas.push(montarResposta(urlColecao("calendar", addr, ref), propsDoRecurso(filho, addr, item.seq.toString(), item), pedidas));
+          }
+        } else {
+          const filho: Recurso = { tipo: "colecao", colecao: recurso.colecao };
+          const ctagFilho = await ctag(mailboxId, recurso.colecao);
+          respostas.push(montarResposta(urlColecao(recurso.colecao, addr), propsDoRecurso(filho, addr, ctagFilho), pedidas));
+        }
       }
       if (recurso.tipo === "colecao") {
-        for (const item of await listarItens(mailboxId, recurso.colecao)) {
+        for (const item of await listarItens(mailboxId, recurso.colecao, agenda?.id)) {
           respostas.push(
-            montarResposta(urlItem(recurso.colecao, addr, item.href), propsDeItem(recurso.colecao, item.etag), pedidas),
+            montarResposta(urlItem(recurso.colecao, addr, item.href, recurso.agendaRef), propsDeItem(recurso.colecao, item.etag), pedidas),
           );
         }
       }
@@ -329,10 +351,10 @@ async function propfind(
 // REPORT
 // ---------------------------------------------------------------------------
 
-function respostaComDados(colecao: Colecao, addr: string, href: string, etag: string, dados: string): string {
+function respostaComDados(colecao: Colecao, addr: string, href: string, etag: string, dados: string, agendaRef?: string): string {
   const elemento = colecao === "contacts" ? "card:address-data" : "cal:calendar-data";
   return (
-    `<d:response><d:href>${esc(urlItem(colecao, addr, href))}</d:href><d:propstat><d:prop>` +
+    `<d:response><d:href>${esc(urlItem(colecao, addr, href, agendaRef))}</d:href><d:propstat><d:prop>` +
     `<d:getetag>"${etag}"</d:getetag><${elemento}>${esc(dados)}</${elemento}>` +
     `</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`
   );
@@ -372,6 +394,8 @@ async function report(
 ): Promise<void> {
   if (recurso.tipo !== "colecao") throw new DavError("REPORT so vale em colecao.", 403);
   const colecao = recurso.colecao;
+  const agenda = await agendaDoRecurso(recurso, mailboxId);
+  if (colecao === "calendar" && !agenda) throw new DavError("Agenda nao encontrada.", 404);
 
   let raiz: Record<string, unknown>;
   try {
@@ -390,14 +414,14 @@ async function report(
       .map((completo) => decodeURIComponent(String(completo).split("/").filter(Boolean).pop() ?? ""))
       .filter((nome) => nome !== "");
 
-    const achados = new Map((await obterVarios(mailboxId, colecao, hrefs)).map((item) => [item.href, item]));
+    const achados = new Map((await obterVarios(mailboxId, colecao, hrefs, agenda?.id)).map((item) => [item.href, item]));
     for (const href of hrefs) {
       const item = achados.get(href);
       if (item) {
-        respostas.push(respostaComDados(colecao, addr, item.href, item.etag, item.data));
+        respostas.push(respostaComDados(colecao, addr, item.href, item.etag, item.data, recurso.agendaRef));
       } else {
         respostas.push(
-          `<d:response><d:href>${esc(urlItem(colecao, addr, href))}</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response>`,
+          `<d:response><d:href>${esc(urlItem(colecao, addr, href, recurso.agendaRef))}</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response>`,
         );
       }
     }
@@ -410,16 +434,41 @@ async function report(
   if (query) {
     /**
      * Filtro aplicado como SUPERCONJUNTO: texto do addressbook-query e
-     * ignorado (devolve tudo) e o time-range corta pela janela indexada,
-     * mantendo sempre os recorrentes. Devolver a mais nunca perde dado do
-     * cliente; devolver a menos faria compromisso sumir do celular.
+     * ignorado (devolve tudo) e o time-range corta pela janela indexada. As
+     * series sao expandidas quando a consulta traz os dois limites; em caso
+     * de dado legado invalido, preservamos o superconjunto para o cliente nao
+     * perder o compromisso.
      */
     const janela = colecao === "calendar" ? acharTimeRange(query.filter) : null;
-    let itens = await listarComDados(mailboxId, colecao);
+    let itens = await listarComDados(mailboxId, colecao, agenda?.id);
 
     if (janela?.start || janela?.end) {
+      let seriesExpandidas = 0;
+      let ocorrenciasDisponiveis = 5_000;
       itens = itens.filter((item) => {
-        if (item.recurring || !item.dtStart) return true;
+        if (item.recurring) {
+          if (!janela.start || !janela.end) return true;
+          if (seriesExpandidas >= 100 || ocorrenciasDisponiveis <= 0) return true;
+          seriesExpandidas += 1;
+          try {
+            const ocorrencias = expandirRecorrencias(item.data, {
+              inicio: janela.start,
+              fim: janela.end,
+              limite: Math.min(1_000, ocorrenciasDisponiveis),
+              limiteCandidatos: 2_000,
+            });
+            ocorrenciasDisponiveis -= ocorrencias.length;
+            return ocorrencias.length > 0;
+          } catch (error) {
+            log.warn("serie CalDAV invalida durante calendar-query; item mantido no resultado", {
+              mailboxId,
+              href: item.href,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return true;
+          }
+        }
+        if (!item.dtStart) return true;
         const fim = item.dtEnd ?? item.dtStart;
         if (janela.end && item.dtStart >= janela.end) return false;
         if (janela.start && fim <= janela.start) return false;
@@ -427,7 +476,7 @@ async function report(
       });
     }
 
-    for (const item of itens) respostas.push(respostaComDados(colecao, addr, item.href, item.etag, item.data));
+    for (const item of itens) respostas.push(respostaComDados(colecao, addr, item.href, item.etag, item.data, recurso.agendaRef));
     enviarXml(res, 207, `<?xml version="1.0" encoding="utf-8"?><d:multistatus ${NS}>${respostas.join("")}</d:multistatus>`);
     return;
   }
@@ -435,18 +484,18 @@ async function report(
   const sync = raiz["sync-collection"] as Record<string, unknown> | undefined;
   if (sync) {
     const token = typeof sync["sync-token"] === "string" ? (sync["sync-token"] as string) : null;
-    const mudancas = await mudancasDesde(mailboxId, colecao, token);
+    const mudancas = await mudancasDesde(mailboxId, colecao, token, agenda?.id);
 
     for (const item of mudancas.alterados) {
       respostas.push(
-        `<d:response><d:href>${esc(urlItem(colecao, addr, item.href))}</d:href><d:propstat><d:prop>` +
+        `<d:response><d:href>${esc(urlItem(colecao, addr, item.href, recurso.agendaRef))}</d:href><d:propstat><d:prop>` +
           `<d:getetag>"${item.etag}"</d:getetag><d:getcontenttype>${CONTENT_TYPE[colecao]}</d:getcontenttype>` +
           `</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`,
       );
     }
     for (const href of mudancas.excluidos) {
       respostas.push(
-        `<d:response><d:href>${esc(urlItem(colecao, addr, href))}</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response>`,
+        `<d:response><d:href>${esc(urlItem(colecao, addr, href, recurso.agendaRef))}</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response>`,
       );
     }
 
@@ -523,7 +572,7 @@ export async function handleDav(req: IncomingMessage, res: ServerResponse, path:
     if (method === "OPTIONS") {
       res.writeHead(200, {
         DAV: "1, 3, addressbook, calendar-access",
-        Allow: "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, REPORT",
+        Allow: "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, REPORT, MKCALENDAR",
         "Content-Length": 0,
       });
       res.end();
@@ -546,19 +595,45 @@ export async function handleDav(req: IncomingMessage, res: ServerResponse, path:
     // Cliente que tenta gravar displayname ou cor da agenda: recusar com
     // educacao (207 com 403 por propriedade) em vez de quebrar o sync.
     if (method === "PROPPATCH") {
-      await lerCorpo(req, 1024 * 1024);
+      if (recurso.tipo !== "colecao" || recurso.colecao !== "calendar") throw new DavError("PROPPATCH so vale em agenda.", 405);
+      const agenda = await agendaDoRecurso(recurso, caixa.id);
+      if (!agenda) throw new DavError("Agenda nao encontrada.", 404);
+      const corpo = await lerCorpo(req, 1024 * 1024);
+      const nome = corpo.match(/<(?:[^:>]+:)?displayname[^>]*>([^<]+)<\//i)?.[1];
+      const cor = corpo.match(/<(?:[^:>]+:)?calendar-color[^>]*>(#[0-9a-fA-F]{6})/i)?.[1];
+      if (!nome && !cor) throw new DavError("Nenhuma propriedade suportada.", 422);
+      await atualizarAgenda(caixa.id, agenda.id, { ...(nome ? { name: nome.trim() } : {}), ...(cor ? { color: cor } : {}) });
       const hrefProprio = path.endsWith("/") ? path : `${path}/`;
       enviarXml(
         res,
         207,
-        `<?xml version="1.0" encoding="utf-8"?><d:multistatus ${NS}><d:response><d:href>${esc(hrefProprio)}</d:href><d:propstat><d:prop/><d:status>HTTP/1.1 403 Forbidden</d:status></d:propstat></d:response></d:multistatus>`,
+        `<?xml version="1.0" encoding="utf-8"?><d:multistatus ${NS}><d:response><d:href>${esc(hrefProprio)}</d:href><d:propstat><d:prop>${nome ? "<d:displayname/>" : ""}${cor ? "<cal:calendar-color/>" : ""}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>`,
       );
       return true;
     }
 
-    if (method === "MKCOL" || method === "MKCALENDAR") {
-      // As colecoes sao fixas (uma de contatos, uma de agenda por caixa).
-      throw new DavError("Colecoes sao fixas nesta conta.", 405);
+    if (method === "MKCALENDAR") {
+      if (recurso.tipo !== "colecao" || recurso.colecao !== "calendar" || recurso.agendaRef === "agenda") throw new DavError("Destino invalido.", 405);
+      if (await agendaDoRecurso(recurso, caixa.id)) throw new DavError("Agenda ja existe.", 405);
+      if (!recurso.agendaRef || !/^[A-Za-z0-9._~-]{1,100}$/.test(recurso.agendaRef)) throw new DavError("Nome de colecao invalido.", 400);
+      const corpo = await lerCorpo(req, 1024 * 1024);
+      const nome = corpo.match(/<(?:[^:>]+:)?displayname[^>]*>([^<]+)<\//i)?.[1]?.trim() || "Agenda";
+      const cor = corpo.match(/<(?:[^:>]+:)?calendar-color[^>]*>(#[0-9a-fA-F]{6})/i)?.[1]?.toUpperCase() || "#2563EB";
+      const position = (await prisma.mailCalendar.aggregate({ where: { mailboxId: caixa.id }, _max: { position: true } }))._max.position ?? -1;
+      await prisma.mailCalendar.create({ data: { mailboxId: caixa.id, href: recurso.agendaRef, name: nome, color: cor, position: position + 1 } });
+      enviarStatus(res, 201);
+      return true;
+    }
+    if (method === "MKCOL") {
+      throw new DavError("Use MKCALENDAR para agendas.", 405);
+    }
+
+    if (recurso.tipo === "colecao" && method === "DELETE" && recurso.colecao === "calendar") {
+      const agenda = await agendaDoRecurso(recurso, caixa.id);
+      if (!agenda) throw new DavError("Agenda nao encontrada.", 404);
+      await excluirAgenda(caixa.id, agenda.id);
+      enviarStatus(res, 204);
+      return true;
     }
 
     if (recurso.tipo !== "item") {
@@ -567,7 +642,9 @@ export async function handleDav(req: IncomingMessage, res: ServerResponse, path:
     }
 
     if (method === "GET" || method === "HEAD") {
-      const item = await obterItem(caixa.id, recurso.colecao, recurso.href);
+      const agenda = await agendaDoRecurso(recurso, caixa.id);
+      if (recurso.colecao === "calendar" && !agenda) throw new DavError("Agenda nao encontrada.", 404);
+      const item = await obterItem(caixa.id, recurso.colecao, recurso.href, agenda?.id);
       if (!item) throw new DavError("Recurso nao encontrado.", 404);
       const bytes = Buffer.from(item.data, "utf8");
       res.writeHead(200, {
@@ -580,6 +657,8 @@ export async function handleDav(req: IncomingMessage, res: ServerResponse, path:
     }
 
     if (method === "PUT") {
+      const agenda = await agendaDoRecurso(recurso, caixa.id);
+      if (recurso.colecao === "calendar" && !agenda) throw new DavError("Agenda nao encontrada.", 404);
       const corpo = await lerCorpo(req, 1024 * 1024);
       const ifMatch = req.headers["if-match"];
       const ifNoneMatch = req.headers["if-none-match"];
@@ -587,6 +666,7 @@ export async function handleDav(req: IncomingMessage, res: ServerResponse, path:
       const resultado = await gravarItem({
         mailboxId: caixa.id,
         colecao: recurso.colecao,
+        calendarId: agenda?.id,
         href: recurso.href,
         corpo,
         ifMatch: typeof ifMatch === "string" ? ifMatch.replace(/^"|"$/g, "") : undefined,
@@ -598,15 +678,26 @@ export async function handleDav(req: IncomingMessage, res: ServerResponse, path:
     }
 
     if (method === "DELETE") {
-      await excluirItem(caixa.id, recurso.colecao, recurso.href);
+      const ifMatch = req.headers["if-match"];
+      await excluirItem(
+        caixa.id,
+        recurso.colecao,
+        recurso.href,
+        typeof ifMatch === "string" ? ifMatch.replace(/^"|"$/g, "") : undefined,
+      );
       enviarStatus(res, 204);
       return true;
     }
 
     throw new DavError("Metodo nao permitido.", 405);
   } catch (error) {
-    if (error instanceof DavError) {
+    if (error instanceof CalendarError) {
       enviarStatus(res, error.statusCode);
+      return true;
+    }
+    if (error instanceof DavError) {
+      if (error.xmlBody) enviarXml(res, error.statusCode, error.xmlBody);
+      else enviarStatus(res, error.statusCode);
       return true;
     }
 

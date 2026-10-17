@@ -25,7 +25,7 @@ const log = createLogger("api-keys");
  * (MAIL_ADMIN_ADDRESSES); e a mesma que o n8n usa.
  */
 
-export type ApiKeyScope = "mailbox" | "provisioning";
+export type ApiKeyScope = "mailbox" | "provisioning" | "agenda:ler" | "agenda:escrever";
 
 export class ApiKeyError extends Error {
   constructor(
@@ -37,7 +37,7 @@ export class ApiKeyError extends Error {
   }
 }
 
-const PREFIXO: Record<ApiKeyScope, string> = { mailbox: "amk_m_", provisioning: "amk_p_" };
+const PREFIXO: Record<ApiKeyScope, string> = { mailbox: "amk_m_", provisioning: "amk_p_", "agenda:ler": "amk_ar_", "agenda:escrever": "amk_aw_" };
 const MAX_CHAVES_POR_CAIXA = 20;
 
 /** sha256 em hex — o que vai para o banco. Sem sal: o token ja tem 160 bits aleatorios. */
@@ -52,6 +52,8 @@ export function gerarToken(scope: ApiKeyScope): string {
 /** Escopo a partir do prefixo; null para qualquer coisa que nao seja chave nossa. */
 export function escopoDoToken(token: string): ApiKeyScope | null {
   if (token.startsWith(PREFIXO.provisioning)) return "provisioning";
+  if (token.startsWith(PREFIXO["agenda:ler"])) return "agenda:ler";
+  if (token.startsWith(PREFIXO["agenda:escrever"])) return "agenda:escrever";
   if (token.startsWith(PREFIXO.mailbox)) return "mailbox";
   return null;
 }

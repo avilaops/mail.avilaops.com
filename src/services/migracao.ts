@@ -5,6 +5,11 @@ import { createLogger } from "../lib/logger.js";
 import { decryptSecret, encryptSecret } from "../lib/crypto.js";
 import { deliverToMailbox } from "../mta/deliver-local.js";
 import { getSystemFolder, type SystemFolderKind } from "./folders.js";
+import { createDAVClient } from "tsdav";
+import { lerEvento } from "../dav/ical.js";
+import { gravarItem } from "../dav/store.js";
+import { garantirAgendaPadrao } from "./calendars.js";
+import { createHash } from "node:crypto";
 
 const log = createLogger("migracao");
 
@@ -170,6 +175,9 @@ export async function agendarMigracao(input: {
   port?: number;
   user: string;
   password: string;
+  calendarUrl?: string;
+  calendarUser?: string;
+  calendarPassword?: string;
 }): Promise<{ id: string; mensagensEstimadas: number }> {
   const emAndamento = await prisma.mailMigration.findFirst({
     where: { mailboxId: input.mailboxId, status: { in: ["pendente", "copiando"] } },
@@ -194,6 +202,9 @@ export async function agendarMigracao(input: {
       sourcePort: porta,
       sourceUser: input.user,
       sourceSecret: encryptSecret(input.password),
+      sourceCalendarUrl: input.calendarUrl,
+      sourceCalendarUser: input.calendarUrl ? (input.calendarUser || input.user) : undefined,
+      sourceCalendarSecret: input.calendarUrl ? encryptSecret(input.calendarPassword || input.password) : undefined,
       totalMessages: teste.mensagens,
       status: "pendente",
     },
@@ -227,6 +238,11 @@ export async function executarMigracao(migracaoId: string): Promise<void> {
       copiedMessages: true,
       skippedMessages: true,
       copiedBytes: true,
+      sourceCalendarUrl: true,
+      sourceCalendarUser: true,
+      sourceCalendarSecret: true,
+      copiedEvents: true,
+      skippedEvents: true,
     },
   });
 
@@ -250,6 +266,8 @@ export async function executarMigracao(migracaoId: string): Promise<void> {
   let copiadas = migracao.copiedMessages;
   let ignoradas = migracao.skippedMessages;
   let bytes = migracao.copiedBytes;
+  let eventosCopiados = migracao.copiedEvents;
+  let eventosIgnorados = migracao.skippedEvents;
 
   try {
     await cliente.connect();
@@ -361,6 +379,12 @@ export async function executarMigracao(migracaoId: string): Promise<void> {
       }
     }
 
+    if (migracao.sourceCalendarUrl && migracao.sourceCalendarUser && migracao.sourceCalendarSecret) {
+      const resultadoAgenda = await copiarAgendaCalDav({ mailboxId: migracao.mailboxId, url: migracao.sourceCalendarUrl, user: migracao.sourceCalendarUser, password: decryptSecret(migracao.sourceCalendarSecret) });
+      eventosCopiados += resultadoAgenda.copiados;
+      eventosIgnorados += resultadoAgenda.ignorados;
+    }
+
     await prisma.mailMigration.update({
       where: { id: migracaoId },
       data: {
@@ -370,8 +394,11 @@ export async function executarMigracao(migracaoId: string): Promise<void> {
         copiedMessages: copiadas,
         skippedMessages: ignoradas,
         copiedBytes: bytes,
+        copiedEvents: eventosCopiados,
+        skippedEvents: eventosIgnorados,
         // A senha do provedor antigo sai do banco assim que deixa de ser util.
         sourceSecret: null,
+        sourceCalendarSecret: null,
       },
     });
 
@@ -380,7 +407,7 @@ export async function executarMigracao(migracaoId: string): Promise<void> {
         mailboxId: migracao.mailboxId,
         type: "migration.completed",
         severity: "info",
-        payload: { migracaoId, copiadas, ignoradas, bytes: bytes.toString() },
+        payload: { migracaoId, copiadas, ignoradas, bytes: bytes.toString(), eventosCopiados, eventosIgnorados },
       },
     });
 
@@ -398,6 +425,7 @@ export async function executarMigracao(migracaoId: string): Promise<void> {
         skippedMessages: ignoradas,
         copiedBytes: bytes,
         sourceSecret: null,
+        sourceCalendarSecret: null,
       },
     });
 
@@ -474,6 +502,34 @@ async function copiarUma(input: {
   return true;
 }
 
+export async function copiarAgendaCalDav(input: { mailboxId: string; url: string; user: string; password: string }): Promise<{ copiados: number; ignorados: number }> {
+  const cliente = await createDAVClient({
+    serverUrl: input.url,
+    credentials: { username: input.user, password: input.password },
+    authMethod: "Basic",
+    defaultAccountType: "caldav",
+  });
+  const calendarios = await cliente.fetchCalendars();
+  const destino = await garantirAgendaPadrao(input.mailboxId);
+  let copiados = 0;
+  let ignorados = 0;
+  for (const calendario of calendarios) {
+    const objetos = await cliente.fetchCalendarObjects({ calendar: calendario });
+    for (const objeto of objetos) {
+      if (copiados + ignorados >= 10_000) throw new MigracaoError("A agenda antiga excede o limite de 10 mil eventos.", 413);
+      const corpo = typeof objeto.data === "string" ? objeto.data : String(objeto.data ?? "");
+      const evento = lerEvento(corpo);
+      if (!evento?.uid) { ignorados += 1; continue; }
+      const existe = await prisma.mailDavItem.findFirst({ where: { mailboxId: input.mailboxId, collection: "calendar", uid: evento.uid, deletedAt: null }, select: { id: true } });
+      if (existe) { ignorados += 1; continue; }
+      const href = `migration-${createHash("sha256").update(evento.uid).digest("hex").slice(0, 32)}.ics`;
+      await gravarItem({ mailboxId: input.mailboxId, colecao: "calendar", calendarId: destino.id, href, corpo, ifNoneMatchAll: true });
+      copiados += 1;
+    }
+  }
+  return { copiados, ignorados };
+}
+
 export async function verMigracao(mailboxId: string) {
   const migracao = await prisma.mailMigration.findFirst({
     where: { mailboxId },
@@ -487,6 +543,8 @@ export async function verMigracao(mailboxId: string) {
       copiedMessages: true,
       skippedMessages: true,
       copiedBytes: true,
+      copiedEvents: true,
+      skippedEvents: true,
       currentFolder: true,
       lastError: true,
       startedAt: true,
@@ -512,7 +570,7 @@ export async function cancelarMigracao(mailboxId: string, migracaoId: string): P
     where: { id: migracaoId, mailboxId, status: { in: ["pendente", "copiando"] } },
     // A senha sai junto: migracao cancelada nao tem por que guardar credencial
     // do provedor antigo.
-    data: { status: "cancelada", finishedAt: new Date(), sourceSecret: null },
+    data: { status: "cancelada", finishedAt: new Date(), sourceSecret: null, sourceCalendarSecret: null },
   });
 
   if (atualizadas.count === 0) {

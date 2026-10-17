@@ -40,15 +40,27 @@ import {
 } from "../services/messages.js";
 import { createFolder, deleteFolder, renameFolder } from "../services/folders.js";
 import { createRule, deleteRule, listRules, updateRule } from "../services/rules.js";
-import { autenticarChave, criarChave, ehAdministrador, escopoDoToken, listarChaves, revogarChave } from "../services/apiKeys.js";
+import { autenticarChave, criarChave, ehAdministrador, escopoDoToken, listarChaves, revogarChave, type ApiKeyScope } from "../services/apiKeys.js";
 import { handleAdminRoute } from "./admin-routes.js";
 import { chavePublica, listarInscricoes, pushDisponivel, registrarInscricao, removerInscricao } from "../services/push.js";
-import { getSettings, updateProfile, updateSettings } from "../services/settings.js";
+import { getCalendarSettings, getSettings, updateCalendarSettings, updateProfile, updateSettings } from "../services/settings.js";
 import { listSendAs, searchContacts } from "../services/contacts.js";
 import { deleteUpload, listUploads, storeUpload } from "../services/uploads.js";
 import { requestPasswordReset, resetPassword } from "../services/recovery.js";
 import { agendarMigracao, cancelarMigracao, testarConexao, verMigracao } from "../services/migracao.js";
 import type { SystemFolderKind } from "../services/folders.js";
+import {
+  CalendarError,
+  atualizarEvento,
+  buscarEventos,
+  criarEvento,
+  excluirEvento,
+  listarJanela,
+  obterEvento,
+} from "../services/calendar.js";
+import { responderConvite } from "../services/calendar-invites.js";
+import { atualizarAgenda, criarAgenda, excluirAgenda, listarAgendas } from "../services/calendars.js";
+import { exportarIcs, importarIcs } from "../services/calendar-transfer.js";
 
 /**
  * Rotas do dono da caixa (webmail).
@@ -89,6 +101,9 @@ const migracaoSchema = z.object({
   port: z.number().int().min(1).max(65535).optional(),
   user: z.string().min(3).max(320),
   password: z.string().min(1).max(500),
+  calendarUrl: z.string().url().max(2_000).optional(),
+  calendarUser: z.string().min(1).max(320).optional(),
+  calendarPassword: z.string().min(1).max(500).optional(),
 });
 
 const FOLDER_KINDS = ["inbox", "sent", "drafts", "spam", "trash", "archive"] as const;
@@ -115,6 +130,21 @@ const settingsSchema = z.object({
   autoReplyUntil: z.string().nullable().optional(),
   showRemoteImages: z.boolean().optional(),
   messagesPerPage: z.number().int().optional(),
+});
+
+const calendarSettingsSchema = z.object({
+  timezone: z.string().min(1).max(100).optional(),
+  weekStart: z.union([z.literal(0), z.literal(1)]).optional(),
+  businessHoursStart: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  businessHoursEnd: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  defaultView: z.enum(["day", "week", "month", "list"]).optional(),
+  defaultReminder: z.number().int().min(0).max(525_600).optional(),
+  defaultAllDayReminder: z.number().int().min(0).max(525_600).optional(),
+});
+
+const calendarInviteReplySchema = z.object({
+  resposta: z.enum(["aceito", "talvez", "recusado"]),
+  comentario: z.string().trim().max(2_000).optional(),
 });
 
 const profileSchema = z.object({
@@ -203,6 +233,7 @@ interface Sessao {
   mustChangePassword: boolean;
   /** Preenchido quando a autenticacao veio de chave de API, nao de login. */
   apiKeyId?: string;
+  apiKeyScope?: ApiKeyScope;
 }
 
 /**
@@ -217,6 +248,7 @@ const VEDADO_A_CHAVE = [
   "/v1/me/migracao",
   "/v1/me/api-keys",
   "/v1/me/profile",
+  "/v1/me/calendar",
   "/v1/admin",
 ];
 
@@ -229,7 +261,7 @@ const pushRefSchema = z.object({ endpoint: z.string().url().max(2000) });
 
 const apiKeySchema = z.object({
   name: z.string().min(1).max(60),
-  scope: z.enum(["mailbox", "provisioning"]).default("mailbox"),
+  scope: z.enum(["mailbox", "provisioning", "agenda:ler", "agenda:escrever"]).default("mailbox"),
 });
 
 /** Intervalo entre consultas ao banco no fluxo de eventos. */
@@ -249,6 +281,9 @@ const SSE_MAX_MS = 5 * 60_000;
  * confiavel do que descobrir que o canal morreu calado.
  */
 async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId: string): Promise<void> {
+  let ultimoCalendarSeq = (await prisma.mailbox.findUnique({ where: { id: mailboxId }, select: { davCalendarSeq: true } }))?.davCalendarSeq ?? 0n;
+  let ultimoLembrete = new Date(Date.now() - 2 * 60_000);
+  let ultimoLembreteId = "";
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-store",
@@ -278,17 +313,41 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId
     void (async () => {
       if (!ativo) return;
       try {
-        const novas = await prisma.message.findMany({
-          where: { mailboxId, receivedAt: { gt: ultimoVisto }, folder: { kind: "inbox" } },
-          orderBy: { receivedAt: "asc" },
-          select: { id: true, fromAddress: true, fromName: true, subject: true, receivedAt: true },
-          take: 20,
-        });
+        const [novas, caixa, lembretes] = await Promise.all([
+          prisma.message.findMany({
+            where: { mailboxId, receivedAt: { gt: ultimoVisto }, folder: { kind: "inbox" } },
+            orderBy: { receivedAt: "asc" },
+            select: { id: true, fromAddress: true, fromName: true, subject: true, receivedAt: true },
+            take: 20,
+          }),
+          prisma.mailbox.findUnique({ where: { id: mailboxId }, select: { davCalendarSeq: true } }),
+          prisma.calendarReminderDelivery.findMany({
+            where: { mailboxId, status: "sent", OR: [{ deliveredAt: { gt: ultimoLembrete } }, { deliveredAt: ultimoLembrete, id: { gt: ultimoLembreteId } }] },
+            orderBy: [{ deliveredAt: "asc" }, { id: "asc" }],
+            select: { id: true, href: true, occurrenceAt: true, minutesBefore: true, deliveredAt: true },
+            take: 20,
+          }),
+        ]);
 
+        let enviou = false;
         if (novas.length > 0) {
           ultimoVisto = novas[novas.length - 1]?.receivedAt ?? ultimoVisto;
           enviar("message", { messages: novas, unread: (await unreadCounts(mailboxId)).total });
-        } else {
+          enviou = true;
+        }
+        if (caixa && caixa.davCalendarSeq > ultimoCalendarSeq) {
+          ultimoCalendarSeq = caixa.davCalendarSeq;
+          enviar("calendar", { seq: ultimoCalendarSeq.toString() });
+          enviou = true;
+        }
+        if (lembretes.length > 0) {
+          const ultimo = lembretes[lembretes.length - 1]!;
+          ultimoLembrete = ultimo.deliveredAt ?? ultimoLembrete;
+          ultimoLembreteId = ultimo.id;
+          enviar("calendar-reminder", { reminders: lembretes.map((lembrete) => ({ ...lembrete, url: `/agenda?data=${lembrete.occurrenceAt.toISOString().slice(0, 10)}&evento=${encodeURIComponent(lembrete.href)}` })) });
+          enviou = true;
+        }
+        if (!enviou) {
           // Comentario SSE: mantem a conexao viva sem virar evento no cliente.
           res.write(": keep-alive\n\n");
         }
@@ -327,10 +386,13 @@ async function autenticar(req: IncomingMessage, path = ""): Promise<Sessao> {
   if (!token) throw new AuthError("Token de sessao ausente.");
 
   // Chave de API da area de desenvolvedor: age como o dono, com as vedacoes acima.
-  if (escopoDoToken(token) === "mailbox") {
+  const escopoChave = escopoDoToken(token);
+  if (escopoChave && escopoChave !== "provisioning") {
     const chave = await autenticarChave(token);
     if (!chave) throw new AuthError("Chave de API invalida ou revogada.");
-    if (VEDADO_A_CHAVE.some((prefixo) => path.startsWith(prefixo))) {
+    const ehAgenda = path.startsWith("/v1/me/calendar/");
+    const permitidoAgenda = chave.scope === "agenda:escrever" ? ehAgenda : chave.scope === "agenda:ler" ? ehAgenda && (req.method ?? "GET").toUpperCase() === "GET" : false;
+    if ((chave.scope === "mailbox" && VEDADO_A_CHAVE.some((prefixo) => path.startsWith(prefixo))) || (chave.scope !== "mailbox" && !permitidoAgenda)) {
       throw new AuthError("Esta operacao nao pode ser feita com chave de API — entre no webmail.", 403);
     }
     return {
@@ -339,6 +401,7 @@ async function autenticar(req: IncomingMessage, path = ""): Promise<Sessao> {
       sessionId: `apikey:${chave.keyId}`,
       mustChangePassword: false,
       apiKeyId: chave.keyId,
+      apiKeyScope: chave.scope,
     };
   }
 
@@ -661,6 +724,117 @@ export async function handleUserRoute(
 
   if (path === "/v1/me/send-as" && method === "GET") {
     json(res, 200, { addresses: await listSendAs(sessao.mailboxId) });
+    return true;
+  }
+
+  // --- Agenda ---
+
+  if (path === "/v1/me/calendar/calendars" && method === "GET") {
+    json(res, 200, { calendars: await listarAgendas(sessao.mailboxId) });
+    return true;
+  }
+
+  if (path === "/v1/me/calendar/import" && method === "POST") {
+    const input = z.object({ uploadId: z.string().min(1), agendaId: z.string().min(1).optional() }).parse(await readBody(req));
+    json(res, 200, await importarIcs(sessao.mailboxId, input.uploadId, input.agendaId));
+    return true;
+  }
+  if (path === "/v1/me/calendar/export" && method === "GET") {
+    binary(res, await exportarIcs(sessao.mailboxId, url.searchParams.get("agendaId") ?? undefined));
+    return true;
+  }
+  if (path === "/v1/me/calendar/calendars" && method === "POST") {
+    json(res, 201, await criarAgenda(sessao.mailboxId, await readBody(req)));
+    return true;
+  }
+  const agendaMatch = path.match(/^\/v1\/me\/calendar\/calendars\/([\w-]+)$/);
+  if (agendaMatch && method === "PATCH") {
+    json(res, 200, await atualizarAgenda(sessao.mailboxId, agendaMatch[1] ?? "", await readBody(req)));
+    return true;
+  }
+  if (agendaMatch && method === "DELETE") {
+    json(res, 200, await excluirAgenda(sessao.mailboxId, agendaMatch[1] ?? ""));
+    return true;
+  }
+
+  if (path === "/v1/me/calendar/settings" && method === "GET") {
+    json(res, 200, await getCalendarSettings(sessao.mailboxId));
+    return true;
+  }
+
+  if (path === "/v1/me/calendar/settings" && method === "PUT") {
+    json(res, 200, await updateCalendarSettings(sessao.mailboxId, calendarSettingsSchema.parse(await readBody(req))));
+    return true;
+  }
+
+  if (path === "/v1/me/calendar/events" && method === "GET") {
+    const from = new Date(url.searchParams.get("from") ?? "");
+    const to = new Date(url.searchParams.get("to") ?? "");
+    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || to <= from) {
+      throw new CalendarError("Informe uma janela valida em from e to.", 422);
+    }
+    if (to.getTime() - from.getTime() > 100 * 86_400_000) {
+      throw new CalendarError("A janela da agenda nao pode exceder 100 dias.", 422);
+    }
+    json(res, 200, { events: await listarJanela(sessao.mailboxId, from, to) });
+    return true;
+  }
+
+  if (path === "/v1/me/calendar/search" && method === "GET") {
+    json(res, 200, { events: await buscarEventos(sessao.mailboxId, url.searchParams.get("q") ?? "") });
+    return true;
+  }
+
+  if (path === "/v1/me/calendar/events" && method === "POST") {
+    const bruto = await readBody(req) as Record<string, unknown>;
+    const notificar = bruto.notificarConvidados === true;
+    const { notificarConvidados: _notificar, ...dados } = bruto;
+    if (notificar && Array.isArray(dados.convidados) && dados.convidados.length > 0 && !dados.organizador) {
+      const caixa = await prisma.mailbox.findUniqueOrThrow({ where: { id: sessao.mailboxId }, select: { localPart: true, domain: { select: { name: true } } } });
+      dados.organizador = `${caixa.localPart}@${caixa.domain.name}`;
+    }
+    const salvo = await criarEvento(sessao.mailboxId, dados, { notificarConvidados: notificar });
+    json(res, 201, salvo);
+    return true;
+  }
+
+  const respostaConviteMatch = path.match(/^\/v1\/me\/calendar\/invites\/([\w-]+)\/reply$/);
+  if (respostaConviteMatch && method === "POST") {
+    const input = calendarInviteReplySchema.parse(await readBody(req));
+    json(res, 200, await responderConvite(sessao.mailboxId, respostaConviteMatch[1] ?? "", input.resposta, input.comentario));
+    return true;
+  }
+
+  const eventoAgendaMatch = path.match(/^\/v1\/me\/calendar\/events\/([\w-]+)$/);
+  if (eventoAgendaMatch && method === "GET") {
+    json(res, 200, await obterEvento(sessao.mailboxId, eventoAgendaMatch[1] ?? ""));
+    return true;
+  }
+  if (eventoAgendaMatch && method === "PATCH") {
+    const ifMatch = req.headers["if-match"];
+    if (typeof ifMatch !== "string" || ifMatch.trim().length === 0) {
+      throw new CalendarError("If-Match e obrigatorio.", 428);
+    }
+    const scope = url.searchParams.get("scope") ?? "all";
+    if (scope !== "this" && scope !== "following" && scope !== "all") throw new CalendarError("Escopo de recorrencia invalido.", 422);
+    const recorrenciaId = url.searchParams.get("recurrenceId") ?? undefined;
+    const bruto = await readBody(req) as Record<string, unknown>;
+    const notificar = bruto.notificarConvidados === true;
+    const { notificarConvidados: _notificar, ...mudancas } = bruto;
+    const salvo = await atualizarEvento(sessao.mailboxId, eventoAgendaMatch[1] ?? "", mudancas, ifMatch.trim(), { scope, recurrenceId: recorrenciaId, notificarConvidados: notificar });
+    json(res, 200, salvo);
+    return true;
+  }
+  if (eventoAgendaMatch && method === "DELETE") {
+    const ifMatch = req.headers["if-match"];
+    if (typeof ifMatch !== "string" || ifMatch.trim().length === 0) {
+      throw new CalendarError("If-Match e obrigatorio.", 428);
+    }
+    const scope = url.searchParams.get("scope") ?? "all";
+    if (scope !== "this" && scope !== "following" && scope !== "all") throw new CalendarError("Escopo de recorrencia invalido.", 422);
+    const recorrenciaId = url.searchParams.get("recurrenceId") ?? undefined;
+    await excluirEvento(sessao.mailboxId, eventoAgendaMatch[1] ?? "", ifMatch.trim(), { scope, recurrenceId: recorrenciaId, notificarConvidados: url.searchParams.get("notificarConvidados") === "true" });
+    json(res, 200, { ok: true });
     return true;
   }
 

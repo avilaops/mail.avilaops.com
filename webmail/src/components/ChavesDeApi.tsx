@@ -16,7 +16,7 @@ import { api } from "@/lib/cliente";
 interface Chave {
   id: string;
   name: string;
-  scope: "mailbox" | "provisioning";
+  scope: "mailbox" | "provisioning" | "agenda:ler" | "agenda:escrever";
   prefix: string;
   lastUsedAt: string | null;
   revokedAt: string | null;
@@ -26,6 +26,8 @@ interface Chave {
 const NOME_ESCOPO: Record<Chave["scope"], string> = {
   mailbox: "Caixa (ler e enviar como você)",
   provisioning: "Provisionamento (criar domínios e caixas)",
+  "agenda:ler": "Agenda (somente leitura)",
+  "agenda:escrever": "Agenda (ler e escrever)",
 };
 
 const campo =
@@ -184,12 +186,12 @@ export function ChavesDeApi({ host }: { host: string }) {
           required
           className={`${campo} min-w-0 flex-1`}
         />
-        {podeProvisionar && (
           <select value={escopo} onChange={(evento) => setEscopo(evento.target.value as Chave["scope"])} className={campo}>
             <option value="mailbox">Caixa</option>
-            <option value="provisioning">Provisionamento</option>
+            <option value="agenda:ler">Agenda: leitura</option>
+            <option value="agenda:escrever">Agenda: leitura e escrita</option>
+            {podeProvisionar && <option value="provisioning">Provisionamento</option>}
           </select>
-        )}
         <button
           type="submit"
           disabled={ocupado}

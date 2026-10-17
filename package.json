@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@prisma/client": "^6",
+    "@touch4it/ical-timezones": "^1.9.0",
     "bcryptjs": "^2.4.3",
     "fast-xml-parser": "^4.5.7",
     "imapflow": "^1.7.0",
@@ -31,8 +32,10 @@
     "mailauth": "^5.0.1",
     "mailparser": "^3.9.15",
     "nodemailer": "^9.0.5",
+    "rrule": "^2.8.1",
     "sanitize-html": "^2.17.7",
     "smtp-server": "^3.19.3",
+    "tsdav": "^2.5.0",
     "web-push": "^3.6.7",
     "zod": "^3.23.0"
   },
@@ -46,7 +49,6 @@
     "@types/smtp-server": "^3.5.10",
     "@types/web-push": "^3.6.4",
     "prisma": "^6",
-    "tsdav": "^2.3.1",
     "tsx": "^4",
     "typescript": "^5"
   },

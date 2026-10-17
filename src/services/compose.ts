@@ -60,6 +60,8 @@ export interface ComposeInput {
   appendSignature?: boolean;
   /** Rascunho a descartar depois que o envio der certo. */
   draftId?: string;
+  /** Identidade estavel para produtores que repetem apos crash. */
+  idempotencyKey?: string;
 }
 
 interface CaixaRemetente {
@@ -107,6 +109,11 @@ async function carregarRemetente(mailboxId: string, fromAddress?: string): Promi
     displayName: mailbox.displayName,
     sendLimitPerHour: mailbox.sendLimitPerHour,
   };
+}
+
+/** Valida e devolve o endereco canonico antes de uma mutacao que criara outbox. */
+export async function validarEnderecoDeEnvio(mailboxId: string, fromAddress?: string): Promise<string> {
+  return (await carregarRemetente(mailboxId, fromAddress)).address;
 }
 
 /** Normaliza, valida e remove repetidos preservando a ordem digitada. */
@@ -233,6 +240,12 @@ export interface SendResult {
 export const JANELA_DESFAZER_SEGUNDOS = 15;
 
 export async function sendMessage(input: ComposeInput): Promise<SendResult> {
+  if (input.idempotencyKey) {
+    const existente = await prisma.outboundMessage.findUnique({ where: { sourceKey: input.idempotencyKey }, select: { id: true, subject: true, recipients: true, nextAttemptAt: true } });
+    if (existente) {
+      return { queuedId: existente.id, rfcMessageId: "", subject: existente.subject ?? "", recipients: Array.isArray(existente.recipients) ? existente.recipients.length : 0, remainingThisHour: 0, desfazerAteMs: existente.nextAttemptAt.getTime() };
+    }
+  }
   const remetente = await carregarRemetente(input.mailboxId, input.fromAddress);
 
   if (!input.text && !input.html) {
@@ -279,6 +292,7 @@ export async function sendMessage(input: ComposeInput): Promise<SendResult> {
     subject,
     sign: true,
     delaySeconds: JANELA_DESFAZER_SEGUNDOS,
+    sourceKey: input.idempotencyKey,
   });
 
   await storeCopyInMailbox(remetente.id, raw);

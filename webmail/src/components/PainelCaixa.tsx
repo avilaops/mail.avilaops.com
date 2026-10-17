@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { api } from "@/lib/cliente";
 import { atualizarTituloDaAba, avisarSistema } from "@/lib/notificacoes";
 import { ListaPastas } from "@/components/ListaPastas";
 import { ListaMensagens, type Filtro } from "@/components/ListaMensagens";
 import { LeitorMensagem, type ResumoConversa } from "@/components/LeitorMensagem";
 import { Compositor, type ContextoComposicao } from "@/components/Compositor";
+import { NavegacaoProduto } from "@/components/NavegacaoProduto";
 import { useAtalhos, type Atalho } from "@/lib/atalhos";
 import type { Caixa, MensagemCompleta, PaginaMensagens, Pasta, ResumoMensagem } from "@/lib/tipos";
 
@@ -67,10 +69,12 @@ function cabecalhoEncaminhamento(mensagem: MensagemCompleta): string {
 
 const PREFIXO_ENCAMINHAMENTO = /^(fwd|enc|fw)\s*:/i;
 
-export function PainelCaixa() {
+export function PainelCaixa({ agendaHabilitada = true }: { agendaHabilitada?: boolean }) {
+  const router = useRouter();
   const [caixa, setCaixa] = useState<Caixa | null>(null);
   const [pastas, setPastas] = useState<Pasta[]>([]);
   const [pastaAtual, setPastaAtual] = useState("inbox");
+  const [pastaRestaurada, setPastaRestaurada] = useState(false);
 
   const [mensagens, setMensagens] = useState<ResumoMensagem[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -150,6 +154,11 @@ export function PainelCaixa() {
   );
 
   useEffect(() => {
+    setPastaAtual(window.sessionStorage.getItem("avila-mail-pasta") ?? "inbox");
+    setPastaRestaurada(true);
+  }, []);
+
+  useEffect(() => {
     void (async () => {
       try {
         setCaixa(await api<Caixa>("/me"));
@@ -161,9 +170,10 @@ export function PainelCaixa() {
   }, [carregarPastas]);
 
   useEffect(() => {
+    if (!pastaRestaurada) return;
     setSelecionados([]);
     void carregarLista(pastaAtual, busca, filtro);
-  }, [pastaAtual, busca, filtro, carregarLista]);
+  }, [pastaAtual, busca, filtro, carregarLista, pastaRestaurada]);
 
   /**
    * Atualiza a pasta aberta e as contagens das pastas.
@@ -519,6 +529,12 @@ export function PainelCaixa() {
     });
   }
 
+  async function responderConvite(mensagem: MensagemCompleta, resposta: "aceito" | "talvez" | "recusado") {
+    await api(`/me/calendar/invites/${mensagem.id}/reply`, { method: "POST", body: { resposta } });
+    setAviso(resposta === "aceito" ? "Convite aceito e adicionado à agenda." : resposta === "talvez" ? "Resposta Talvez enviada." : "Convite recusado.");
+    await abrir(mensagem.id);
+  }
+
   // Contador no titulo da aba: e o aviso que funciona sem permissao nenhuma,
   // inclusive com a aba em segundo plano e o computador em silencio.
   useEffect(() => {
@@ -575,7 +591,7 @@ export function PainelCaixa() {
     fonte.onerror = () => undefined;
 
     return () => fonte.close();
-  }, [pastaAtual, busca, filtro, carregarPastas]);
+  }, [pastaAtual, busca, filtro, carregarPastas, abrir]);
 
   // --- Atalhos de teclado ---
 
@@ -594,6 +610,7 @@ export function PainelCaixa() {
   );
 
   const atalhos: Atalho[] = [
+    { tecla: "g a", descricao: "Ir para a agenda", acao: () => router.push("/agenda") },
     { tecla: "j", descricao: "Próxima mensagem", acao: () => navegar(1) },
     { tecla: "k", descricao: "Mensagem anterior", acao: () => navegar(-1) },
     { tecla: "u", descricao: "Voltar para a lista", acao: () => setVista("lista") },
@@ -652,7 +669,10 @@ export function PainelCaixa() {
 
       try {
         await api(`/me/folders/${id}`, { method: "DELETE" });
-        if (pastaAtual === id) setPastaAtual("inbox");
+        if (pastaAtual === id) {
+          setPastaAtual("inbox");
+          window.sessionStorage.setItem("avila-mail-pasta", "inbox");
+        }
         await carregarPastas();
       } catch (falha) {
         setErro(falha instanceof Error ? falha.message : "Falha ao excluir a pasta.");
@@ -662,7 +682,9 @@ export function PainelCaixa() {
   );
 
   return (
-    <div className="topo-seguro flex h-dvh max-h-dvh min-h-0 overflow-hidden">
+    <div className="topo-seguro flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden">
+      <NavegacaoProduto agendaHabilitada={agendaHabilitada} />
+      <div className="flex min-h-0 flex-1 overflow-hidden">
       <div className={`${vista === "pastas" ? "flex" : "hidden"} h-full md:flex`}>
         <ListaPastas
           caixa={caixa}
@@ -670,6 +692,7 @@ export function PainelCaixa() {
           pastaAtual={pastaAtual}
           onEscolher={(chave) => {
             setPastaAtual(chave);
+            window.sessionStorage.setItem("avila-mail-pasta", chave);
             setAberta(null);
             setSelecionada(null);
             setVista("lista");
@@ -742,6 +765,7 @@ export function PainelCaixa() {
             pastas={pastas}
             onLiberarImagens={() => selecionada && void abrir(selecionada, true)}
             onResponder={responder}
+            onResponderConvite={responderConvite}
             onEncaminhar={encaminhar}
             onFavoritar={(id, favorita) => void favoritar(id, favorita)}
             onMover={(id, folderId) => void mover([id], folderId)}
@@ -752,9 +776,12 @@ export function PainelCaixa() {
             onSpam={(id, spam) => void marcarSpam([id], spam)}
             onVoltar={() => setVista("lista")}
             onAbrirDaConversa={(id) => void abrir(id)}
+            enderecoCaixa={caixa?.address}
+            agendaHabilitada={agendaHabilitada}
           />
         </div>
       </main>
+      </div>
 
       {ajuda && (
         <div

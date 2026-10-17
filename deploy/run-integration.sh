@@ -10,7 +10,19 @@
 set -euo pipefail
 
 CONTAINER="avila-mail-test"
-PORTA="55432"
+PORTA="${MAIL_TEST_PORT:-}"
+if [ -z "$PORTA" ]; then
+	for candidata in $(seq 55432 55462); do
+		if ! ss -ltnH "sport = :${candidata}" | grep -q .; then
+			PORTA="$candidata"
+			break
+		fi
+	done
+fi
+if [ -z "$PORTA" ]; then
+	echo "Nenhuma porta de teste livre entre 55432 e 55462." >&2
+	exit 1
+fi
 export MAIL_DATABASE_URL="postgresql://teste:teste@127.0.0.1:${PORTA}/avila_mail_test?schema=public"
 
 cleanup() {
@@ -22,6 +34,7 @@ cleanup
 
 echo "==> Subindo PostgreSQL descartavel na porta ${PORTA}"
 docker run -d --name "$CONTAINER" \
+	--tmpfs /var/lib/postgresql/data:rw,size=512m \
 	-e POSTGRES_PASSWORD=teste \
 	-e POSTGRES_USER=teste \
 	-e POSTGRES_DB=avila_mail_test \

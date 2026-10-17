@@ -116,7 +116,12 @@ async function encaminhar(request: NextRequest, caminho: string[]): Promise<Next
     }
   }
 
-  const resposta = await chamarComSessao<unknown>(destino, { method: request.method, body: corpo });
+  const ifMatch = request.headers.get("if-match");
+  const resposta = await chamarComSessao<unknown>(destino, {
+    method: request.method,
+    body: corpo,
+    ...(ifMatch ? { headers: { "If-Match": ifMatch } } : {}),
+  });
 
   if (resposta.status === 401) {
     // Sessao morreu de vez: limpa os cookies para a proxima navegacao cair no

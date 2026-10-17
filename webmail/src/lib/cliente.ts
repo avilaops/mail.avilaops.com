@@ -1,5 +1,7 @@
 "use client";
 
+import type { AgendaCalendario, DadosEventoAgenda, EventoAgenda, PreferenciasAgenda } from "@/lib/tipos";
+
 /**
  * Acesso a API a partir do navegador.
  *
@@ -30,10 +32,10 @@ function tokenCsrf(): string {
 
 export async function api<T>(
   caminho: string,
-  opcoes: { method?: string; body?: unknown } = {},
+  opcoes: { method?: string; body?: unknown; headers?: Record<string, string> } = {},
 ): Promise<T> {
   const metodo = opcoes.method ?? "GET";
-  const cabecalhos: Record<string, string> = { Accept: "application/json" };
+  const cabecalhos: Record<string, string> = { Accept: "application/json", ...opcoes.headers };
 
   if (metodo !== "GET") {
     cabecalhos["x-csrf-token"] = tokenCsrf();
@@ -70,6 +72,99 @@ export async function api<T>(
   }
 
   return corpo as T;
+}
+
+export async function listarEventosAgenda(de: Date, ate: Date): Promise<EventoAgenda[]> {
+  const parametros = new URLSearchParams({ from: de.toISOString(), to: ate.toISOString() });
+  const chave = parametros.toString();
+  const existente = cacheAgenda.get(chave);
+  if (existente && existente.expiraEm > Date.now()) return existente.requisicao;
+  const requisicao = api<{ events: EventoAgenda[] }>(`/me/calendar/events?${parametros}`)
+    .then((resposta) => resposta.events)
+    .catch((erro) => {
+      cacheAgenda.delete(chave);
+      throw erro;
+    });
+  cacheAgenda.set(chave, { requisicao, expiraEm: Date.now() + 30_000 });
+  return requisicao;
+}
+
+const cacheAgenda = new Map<string, { requisicao: Promise<EventoAgenda[]>; expiraEm: number }>();
+
+export function invalidarCacheAgenda(): void {
+  cacheAgenda.clear();
+}
+
+export async function listarAgendas(): Promise<AgendaCalendario[]> {
+  return (await api<{ calendars: AgendaCalendario[] }>("/me/calendar/calendars")).calendars;
+}
+
+export function criarAgenda(nome: string, cor: string): Promise<AgendaCalendario> {
+  return api("/me/calendar/calendars", { method: "POST", body: { name: nome, color: cor } });
+}
+
+export function atualizarAgenda(id: string, mudancas: { name?: string; color?: string }): Promise<AgendaCalendario> {
+  return api(`/me/calendar/calendars/${encodeURIComponent(id)}`, { method: "PATCH", body: mudancas });
+}
+
+export async function excluirAgenda(id: string): Promise<void> {
+  await api(`/me/calendar/calendars/${encodeURIComponent(id)}`, { method: "DELETE" });
+  invalidarCacheAgenda();
+}
+
+export async function obterEventoAgenda(id: string): Promise<EventoAgenda> {
+  return api<EventoAgenda>(`/me/calendar/events/${encodeURIComponent(id)}`);
+}
+
+export async function criarEventoAgenda(dados: DadosEventoAgenda, opcoes?: { notificarConvidados?: boolean }): Promise<EventoAgenda> {
+  const evento = await api<EventoAgenda>("/me/calendar/events", { method: "POST", body: { ...dados, notificarConvidados: opcoes?.notificarConvidados === true } });
+  invalidarCacheAgenda();
+  return evento;
+}
+
+export async function atualizarEventoAgenda(
+  id: string,
+  etag: string,
+  mudancas: Partial<DadosEventoAgenda>,
+  escopo?: { scope: "this" | "following" | "all"; recurrenceId: string },
+  opcoes?: { notificarConvidados?: boolean },
+): Promise<EventoAgenda> {
+  const parametros = escopo ? `?${new URLSearchParams({ scope: escopo.scope, recurrenceId: escopo.recurrenceId })}` : "";
+  const evento = await api<EventoAgenda>(`/me/calendar/events/${encodeURIComponent(id)}${parametros}`, {
+    method: "PATCH",
+    headers: { "If-Match": etag },
+    body: { ...mudancas, notificarConvidados: opcoes?.notificarConvidados === true },
+  });
+  invalidarCacheAgenda();
+  return evento;
+}
+
+export async function excluirEventoAgenda(id: string, etag: string, escopo?: { scope: "this" | "following" | "all"; recurrenceId: string }, opcoes?: { notificarConvidados?: boolean }): Promise<void> {
+  const busca = new URLSearchParams(escopo ? { scope: escopo.scope, recurrenceId: escopo.recurrenceId } : {});
+  if (opcoes?.notificarConvidados) busca.set("notificarConvidados", "true");
+  const parametros = busca.size > 0 ? `?${busca}` : "";
+  await api(`/me/calendar/events/${encodeURIComponent(id)}${parametros}`, {
+    method: "DELETE",
+    headers: { "If-Match": etag },
+  });
+  invalidarCacheAgenda();
+}
+
+export async function buscarEventosAgenda(consulta: string): Promise<EventoAgenda[]> {
+  const parametros = new URLSearchParams({ q: consulta });
+  return (await api<{ events: EventoAgenda[] }>(`/me/calendar/search?${parametros}`)).events;
+}
+
+export function obterPreferenciasAgenda(): Promise<PreferenciasAgenda> {
+  return api<PreferenciasAgenda>("/me/calendar/settings");
+}
+
+export function salvarPreferenciasAgenda(dados: PreferenciasAgenda): Promise<PreferenciasAgenda> {
+  return api<PreferenciasAgenda>("/me/calendar/settings", { method: "PUT", body: dados });
+}
+
+export function importarAgenda(uploadId: string, agendaId?: string): Promise<{ importados: number; ignorados: number; erros: number }> {
+  return api("/me/calendar/import", { method: "POST", body: { uploadId, agendaId } });
 }
 
 export async function sair(): Promise<void> {

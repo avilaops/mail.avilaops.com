@@ -24,9 +24,9 @@ self.addEventListener("push", (evento) => {
       badge: "/apple-touch-icon.png",
       // Uma notificação por caixa: a nova substitui a anterior em vez de
       // empilhar dez avisos dizendo a mesma coisa.
-      tag: "avila-mail-nova-mensagem",
+      tag: aviso.notificationTag || "mail:mensagem-nova",
       renotify: true,
-      data: { messageId: aviso.messageId ?? null },
+      data: { messageId: aviso.messageId ?? null, url: aviso.url ?? null },
     }),
   );
 });
@@ -35,16 +35,18 @@ self.addEventListener("notificationclick", (evento) => {
   evento.notification.close();
 
   const id = evento.notification.data && evento.notification.data.messageId;
-  const destino = id ? `/caixa?mensagem=${encodeURIComponent(id)}` : "/caixa";
+  const url = evento.notification.data && evento.notification.data.url;
+  const destino = url || (id ? `/caixa?mensagem=${encodeURIComponent(id)}` : "/caixa");
 
   // Reaproveita a aba já aberta do webmail em vez de abrir a décima cópia.
   evento.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((janelas) => {
       for (const janela of janelas) {
-        if (janela.url.includes("/caixa")) {
-          janela.focus();
-          if (id && "navigate" in janela) janela.navigate(destino).catch(() => undefined);
-          return undefined;
+        if (janela.url.includes(url ? "/agenda" : "/caixa")) {
+          return janela.focus()
+            .then(() => (url || id) && "navigate" in janela ? janela.navigate(destino) : undefined)
+            .then(() => undefined)
+            .catch(() => undefined);
         }
       }
       return self.clients.openWindow(destino);

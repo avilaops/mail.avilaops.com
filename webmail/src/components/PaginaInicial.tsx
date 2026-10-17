@@ -15,6 +15,7 @@
  */
 
 import { useState } from "react";
+import Link from "next/link";
 
 const CRIAR_CONTA = "https://app.avilaops.com/email";
 const WHATSAPP =
@@ -348,7 +349,7 @@ export function PaginaInicial() {
     <div className="flex min-h-full flex-col bg-[var(--color-fundo)]">
       <header className="topo-seguro sticky top-0 z-20 border-b border-[var(--color-borda)] bg-[var(--color-fundo)]/95 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
-          <a href="/" className="flex shrink-0 items-center gap-3">
+          <Link href="/" className="flex shrink-0 items-center gap-3">
             {/* eslint-disable-next-line @next/next/no-img-element -- ícone estático, sem otimização */}
             <img
               src="/web-app-manifest-192x192.png"
@@ -358,7 +359,7 @@ export function PaginaInicial() {
               className="h-9 w-9 rounded-xl shadow-sm sm:h-10 sm:w-10"
             />
             <span className="text-sm font-semibold tracking-tight">Ávila Mail</span>
-          </a>
+          </Link>
 
           <nav className="flex items-center gap-1 sm:gap-3">
             <a

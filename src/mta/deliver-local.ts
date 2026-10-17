@@ -13,6 +13,7 @@ import { enqueueForward } from "./queue.js";
 import { proximoUid } from "../services/uid.js";
 import { createLogger } from "../lib/logger.js";
 import type { InboundAuthResult } from "./authcheck.js";
+import { aplicarRespostaRecebida } from "../services/calendar-replies.js";
 
 const log = createLogger("deliver-local");
 
@@ -321,6 +322,17 @@ export async function deliverToMailbox(
 
     return created;
   });
+
+  // O e-mail sempre permanece na caixa. A automacao da agenda e adicional e
+  // so aceita REPLY autenticado; falha nela nao transforma entrega em bounce.
+  const calendario = parsed.attachments.find((anexo) => anexo.contentType.toLowerCase() === "text/calendar" && anexo.content.length <= 2 * 1024 * 1024);
+  if (!posta && calendario) {
+    try {
+      await aplicarRespostaRecebida(target.mailboxId, calendario.content.toString("utf8"), from.address, auth);
+    } catch (error) {
+      log.warn("resposta de agenda nao pode ser aplicada", { mailboxId: target.mailboxId, messageId: message.id, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
 
   /**
    * Aviso no aparelho, mesmo com o webmail fechado.

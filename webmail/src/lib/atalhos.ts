@@ -32,20 +32,51 @@ export function useAtalhos(atalhos: Atalho[], ativo: boolean): void {
 
   useEffect(() => {
     if (!ativo) return;
+    let prefixo = "";
+    let temporizador: ReturnType<typeof setTimeout> | null = null;
+
+    function limparPrefixo() {
+      prefixo = "";
+      if (temporizador) clearTimeout(temporizador);
+      temporizador = null;
+    }
 
     function aoTeclar(evento: KeyboardEvent) {
-      if (digitando(evento.target)) return;
+      if (digitando(evento.target)) {
+        limparPrefixo();
+        return;
+      }
       // Combinações com modificador pertencem ao navegador (Ctrl+F, Cmd+R…).
-      if (evento.ctrlKey || evento.metaKey || evento.altKey) return;
+      if (evento.ctrlKey || evento.metaKey || evento.altKey) {
+        limparPrefixo();
+        return;
+      }
 
-      const escolhido = atual.current.find((atalho) => atalho.tecla === evento.key);
-      if (!escolhido) return;
+      const combinacao = prefixo ? `${prefixo} ${evento.key}` : evento.key;
+      const escolhido = atual.current.find((atalho) => atalho.tecla === combinacao);
+      if (escolhido) {
+        evento.preventDefault();
+        limparPrefixo();
+        escolhido.acao();
+        return;
+      }
 
-      evento.preventDefault();
-      escolhido.acao();
+      const iniciaSequencia = atual.current.some((atalho) => atalho.tecla.startsWith(`${evento.key} `));
+      if (iniciaSequencia) {
+        evento.preventDefault();
+        limparPrefixo();
+        prefixo = evento.key;
+        temporizador = setTimeout(limparPrefixo, 1_200);
+        return;
+      }
+
+      limparPrefixo();
     }
 
     document.addEventListener("keydown", aoTeclar);
-    return () => document.removeEventListener("keydown", aoTeclar);
+    return () => {
+      limparPrefixo();
+      document.removeEventListener("keydown", aoTeclar);
+    };
   }, [ativo]);
 }

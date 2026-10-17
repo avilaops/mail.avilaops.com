@@ -5,6 +5,7 @@ import { deleteRaw, readRaw } from "../lib/storage.js";
 import { htmlParaTexto, sanitizeMessageHtml } from "../lib/sanitize.js";
 import { getSystemFolder, resolveFolder, type SystemFolderKind, ensureSystemFolders } from "./folders.js";
 import { moverParaPasta } from "./uid.js";
+import { extrairIcalDaMensagem, resumirConvite } from "./calendar-invites.js";
 
 const log = createLogger("messages");
 
@@ -286,6 +287,7 @@ export async function getMessage(
     where: { id: messageId, mailboxId },
     select: {
       id: true,
+      storageKey: true,
       folderId: true,
       threadKey: true,
       rfcMessageId: true,
@@ -323,13 +325,26 @@ export async function getMessage(
     await prisma.message.update({ where: { id: mensagem.id }, data: { seen: true } });
   }
 
+  let convite = null;
+  if (mensagem.attachments.some((anexo) => anexo.contentType.toLowerCase() === "text/calendar" || anexo.filename?.toLowerCase().endsWith(".ics"))) {
+    const [raw, caixa] = await Promise.all([
+      readRaw(mensagem.storageKey),
+      prisma.mailbox.findUnique({ where: { id: mailboxId }, select: { localPart: true, domain: { select: { name: true } } } }),
+    ]);
+    const ical = await extrairIcalDaMensagem(raw);
+    if (ical && caixa) convite = await resumirConvite(mailboxId, `${caixa.localPart}@${caixa.domain.name}`, ical, mensagem.fromAddress);
+  }
+
+  const { storageKey: _storageKey, ...mensagemPublica } = mensagem;
+
   return {
-    ...mensagem,
+    ...mensagemPublica,
     seen: options.markAsRead !== false ? true : mensagem.seen,
     bodyHtml: sanitizado?.html ?? null,
     bodyText: mensagem.bodyText ?? (mensagem.bodyHtml ? htmlParaTexto(mensagem.bodyHtml) : null),
     blockedRemoteImages: sanitizado?.imagensBloqueadas ?? 0,
     senderVerified: isVerified(mensagem.authResult),
+    convite,
   };
 }
 

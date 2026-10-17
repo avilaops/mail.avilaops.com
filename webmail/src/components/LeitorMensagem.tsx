@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import type { MensagemCompleta, Pasta } from "@/lib/tipos";
 import { Menu, type ItemDeMenu } from "@/components/Menu";
 
@@ -143,6 +144,7 @@ interface Props {
   pastas: Pasta[];
   onLiberarImagens: () => void;
   onResponder: (mensagem: MensagemCompleta, todos: boolean) => void;
+  onResponderConvite: (mensagem: MensagemCompleta, resposta: "aceito" | "talvez" | "recusado") => Promise<void>;
   onEncaminhar: (mensagem: MensagemCompleta) => void;
   onFavoritar: (id: string, favorita: boolean) => void;
   onMover: (id: string, folderId: string) => void;
@@ -155,6 +157,17 @@ interface Props {
   /** Volta para a lista no celular, onde as colunas não cabem lado a lado. */
   onVoltar: () => void;
   onAbrirDaConversa: (id: string) => void;
+  enderecoCaixa?: string;
+  agendaHabilitada?: boolean;
+}
+
+export function convidadosSugeridosDeMensagem(mensagem: MensagemCompleta, enderecoCaixa?: string): string[] {
+  const proprio = enderecoCaixa?.trim().toLowerCase();
+  return [...new Set([
+    mensagem.fromAddress,
+    ...mensagem.toAddresses.map((item) => item.address),
+    ...mensagem.ccAddresses.map((item) => item.address),
+  ].map((item) => item.trim().toLowerCase()).filter((item) => item && item !== proprio))];
 }
 
 export function LeitorMensagem({
@@ -165,6 +178,7 @@ export function LeitorMensagem({
   pastas,
   onLiberarImagens,
   onResponder,
+  onResponderConvite,
   onEncaminhar,
   onFavoritar,
   onMover,
@@ -175,9 +189,14 @@ export function LeitorMensagem({
   onSpam,
   onVoltar,
   onAbrirDaConversa,
+  enderecoCaixa,
+  agendaHabilitada = true,
 }: Props) {
+  const router = useRouter();
   const [imagensLiberadas, setImagensLiberadas] = useState(false);
   const [historicoAberto, setHistoricoAberto] = useState(false);
+  const [respondendoConvite, setRespondendoConvite] = useState<"aceito" | "talvez" | "recusado" | null>(null);
+  const [erroConvite, setErroConvite] = useState<string | null>(null);
 
   // Ao trocar de mensagem, o conteudo atual volta a ser o protagonista. Antes,
   // conversas longas chegavam depois da mensagem e empurravam o corpo inteiro
@@ -185,7 +204,22 @@ export function LeitorMensagem({
   useEffect(() => {
     setHistoricoAberto(false);
     setImagensLiberadas(false);
+    setRespondendoConvite(null);
+    setErroConvite(null);
   }, [mensagem?.id]);
+
+  async function responderConvite(resposta: "aceito" | "talvez" | "recusado") {
+    if (!mensagem || respondendoConvite) return;
+    setRespondendoConvite(resposta);
+    setErroConvite(null);
+    try {
+      await onResponderConvite(mensagem, resposta);
+    } catch (falha) {
+      setErroConvite(falha instanceof Error ? falha.message : "Não foi possível responder ao convite.");
+    } finally {
+      setRespondendoConvite(null);
+    }
+  }
 
   /**
    * Documento do iframe montado por inteiro aqui, com CSP propria: mesmo com
@@ -255,6 +289,15 @@ export function LeitorMensagem({
     ...(haMaisDestinatarios
       ? [{ chave: "todos", rotulo: "Responder a todos", onEscolher: () => onResponder(mensagem, true) }]
       : []),
+    ...(agendaHabilitada ? [{
+      chave: "criar-evento",
+      rotulo: "Criar evento",
+      onEscolher: () => {
+        const convidadosSugeridos = convidadosSugeridosDeMensagem(mensagem, enderecoCaixa);
+        sessionStorage.setItem("avila_evento_da_mensagem", JSON.stringify({ titulo: mensagem.subject || "Evento", descricao: `${window.location.origin}/?mensagem=${encodeURIComponent(mensagem.id)}`, convidadosSugeridos }));
+        router.push("/agenda?novo=mensagem");
+      },
+    }] : []),
     ...proprias.map((pasta) => ({
       chave: `mover-${pasta.id}`,
       rotulo: `Mover para ${pasta.name}`,
@@ -512,6 +555,31 @@ export function LeitorMensagem({
             Esta mensagem caiu no Spam: {mensagem.quarantineReason}.
           </p>
         </div>
+      )}
+
+      {mensagem.convite && (
+        <section aria-labelledby="titulo-convite" className="border-b border-[var(--color-borda)] bg-[var(--color-superficie)] px-4 py-4 md:px-6">
+          <div className="flex flex-wrap items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium uppercase tracking-wide text-[var(--color-texto-fraco)]">Convite de agenda</p>
+              <h2 id="titulo-convite" className="mt-1 text-base font-semibold">{mensagem.convite.titulo}</h2>
+              <p className="mt-1 text-sm">{new Date(mensagem.convite.inicio).toLocaleString("pt-BR", { dateStyle: "full", timeStyle: mensagem.convite.diaInteiro ? undefined : "short" })}</p>
+              {mensagem.convite.local && <p className="mt-1 text-sm text-[var(--color-texto-fraco)]">Local: {mensagem.convite.local}</p>}
+              {mensagem.convite.organizador && <p className="text-sm text-[var(--color-texto-fraco)]">Organizador: {mensagem.convite.organizador}</p>}
+            </div>
+            <a href={`/agenda?data=${mensagem.convite.inicio.slice(0, 10)}`} className={acao}>Ver na agenda</a>
+          </div>
+          {mensagem.convite.cancelado ? <p role="status" className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm font-medium text-red-800">Este evento foi cancelado.</p> : (
+            <div className="mt-4 flex flex-wrap gap-2" aria-label="Responder ao convite">
+              {([{ rotulo: "Sim", resposta: "aceito" }, { rotulo: "Talvez", resposta: "talvez" }, { rotulo: "Não", resposta: "recusado" }] as const).map((opcao) => <button key={opcao.resposta} type="button" disabled={respondendoConvite !== null} aria-pressed={mensagem.convite?.minhaResposta === opcao.resposta} onClick={() => void responderConvite(opcao.resposta)} className={`${acao} disabled:cursor-wait disabled:opacity-50`}>{respondendoConvite === opcao.resposta ? "Enviando…" : opcao.rotulo}</button>)}
+            </div>
+          )}
+          {erroConvite && <p role="alert" className="mt-3 text-sm font-medium text-red-700">{erroConvite}</p>}
+          {mensagem.convite.cancelamento === "nao_confiavel" && <p role="alert" className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">Este cancelamento não pôde ser verificado e não alterou sua agenda.</p>}
+          {mensagem.convite.cancelamento === "obsoleto" && <p role="status" className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">Este cancelamento é antigo e foi ignorado.</p>}
+          {mensagem.convite.conflito && <p className="mt-3 text-sm font-medium text-amber-700">Você já tem outro evento nesse horário.</p>}
+          {mensagem.convite.alteracoes.length > 0 && <p className="mt-2 text-sm text-[var(--color-texto-fraco)]">Atualização do convite: mudou {mensagem.convite.alteracoes.join(", ")}.</p>}
+        </section>
       )}
 
       {/* O corpo vai num cartao com margem: colado nas bordas, o branco do

@@ -41,8 +41,12 @@ Documento de produto (arquitetura, custos, margem, fases):
 | Anti-spam que aprende com os botões "é spam"/"não é spam" | `src/mta/deliver-local.ts` | Pronto |
 | Verificação em duas etapas no webmail (TOTP, RFC 6238) | `src/lib/totp.ts` + `src/services/session.ts` | Pronto |
 | CardDAV (contatos) e CalDAV (agenda) para celular/desktop | `src/dav/` | Pronto |
+| API JSON da agenda: janela, busca e CRUD com ETag | `src/services/calendar.ts` + `src/api/me-routes.ts` | Pronto |
+| Várias agendas, importação/exportação ICS e chaves restritas de agenda | `src/services/calendars.ts` + `calendar-transfer.ts` | Pronto |
 | Autoatendimento (domínio, DNS, caixa) | `src/services/publicSignup.ts` + `src/services/signupCheckout.ts` | Pronto |
 | Página inicial pública (a porta de quem ainda não é cliente) | `webmail/src/components/PaginaInicial.tsx` | Pronto |
+
+A liberação da agenda usa `AGENDA_ENABLED=false|internal|all`. Em `internal`, somente os domínios de `AGENDA_INTERNAL_DOMAINS` veem e abrem a agenda. O guia de celular está em `docs/agenda-configuracao-celular.md` e o aviso aos clientes permanece como rascunho em `docs/agenda-aviso-clientes.md` até aprovação.
 
 ## Login pelo SSO (auth.avilaops.com)
 
@@ -66,12 +70,13 @@ Caddy: so `/api/v1/*` vai para a API; o resto de `/api/*` e BFF do webmail.
 
 ```bash
 npm test                  # sobe Postgres em container, migra e roda tudo
-npm run test:smoke        # 96 verificações, sem banco e sem rede
+npm run test:smoke        # 251 verificações, sem banco e sem rede
 npm run test:security     # 46 verificações de injeção, XSS e token
-npm run test:integration  # 455 verificações contra Postgres real
+npm run test:integration  # 400 verificações contra Postgres real
+npm --prefix webmail run test:calendar-integrations # integrações mensagem/.ics
 ```
 
-**Total: 578 verificações.** Os protocolos são conferidos por clientes
+**Servidor: 697 verificações. Interface da agenda: 87 verificações.** Os protocolos são conferidos por clientes
 independentes: IMAP pelo `imapflow`, CardDAV/CalDAV pelo `tsdav`. A sondagem de segurança cobre 23 vetores de XSS,
 injeção de cabeçalho CRLF (assunto e nome de exibição), endereços malformados e
 8 formas de falsificar o token de sessão.
@@ -251,11 +256,13 @@ chave de API não entra (administrar é ação de gente logada, com 2FA se tiver
 
 O dono da caixa cria, copia e revoga chaves na tela **Conta → Desenvolvedor** do
 webmail, ninguém precisa entrar no servidor. O token aparece uma única vez; o banco
-guarda só o hash (`mail_api_keys`). Dois escopos, dois prefixos:
+guarda só o hash (`mail_api_keys`). Os escopos e prefixos são:
 
 | Prefixo | Escopo | Onde vale | Quem cria |
 |---|---|---|---|
 | `amk_m_…` | Caixa | `/v1/me/*` (age como o dono) | qualquer dono |
+| `amk_ar_…` | `agenda:ler` | somente GET em `/v1/me/calendar/*` | qualquer dono |
+| `amk_aw_…` | `agenda:escrever` | leitura e mutações em `/v1/me/calendar/*` | qualquer dono |
 | `amk_p_…` | Provisionamento | `/v1/domains`, `/v1/mailboxes`, `/v1/aliases`, `/v1/billing`, `/v1/ops` | caixa em `MAIL_ADMIN_ADDRESSES` |
 
 Chave de caixa **não** troca senha, 2FA, sessões, migração, perfil nem outras chaves (403).
@@ -307,6 +314,13 @@ apaga caixa de qualquer cliente; o de sessão só enxerga a própria caixa.
 | PATCH | `/v1/me/profile` | Nome de exibição e e-mail de recuperação |
 | GET | `/v1/me/contacts?q=` | Autocompletar destinatário (do histórico) |
 | GET | `/v1/me/send-as` | Endereços que a caixa pode usar como remetente |
+| GET | `/v1/me/calendar/events?from=&to=` | Eventos numa janela de até 100 dias |
+| POST | `/v1/me/calendar/events` | Cria evento |
+| GET/PATCH/DELETE | `/v1/me/calendar/events/{id}` | Detalhe / edição / exclusão; mutações exigem `If-Match` |
+| GET | `/v1/me/calendar/search?q=` | Busca por título, local e descrição |
+| GET/POST/PATCH/DELETE | `/v1/me/calendar/calendars` | Lista e administra agendas por nome e cor |
+| POST | `/v1/me/calendar/import` | Importa um upload `.ics`, com relatório de importados, ignorados e erros |
+| GET | `/v1/me/calendar/export?agendaId=` | Exporta uma agenda ou todas em `.ics` |
 | POST/GET | `/v1/me/attachments` | Anexo enviado antes, com progresso |
 | DELETE | `/v1/me/attachments/{id}` | Descarta anexo pendente |
 | POST | `/v1/me/messages/report-spam` · `not-spam` | Move e registra para treino |
@@ -317,8 +331,8 @@ apaga caixa de qualquer cliente; o de sessão só enxerga a própria caixa.
 
 ### Contatos e agenda no celular (CardDAV/CalDAV)
 
-Cada caixa tem uma coleção de contatos (`Contatos`) e uma agenda (`Agenda`,
-só VEVENT), servidas em `https://mail.avilaops.com/dav/` com o endereço e a
+Cada caixa tem uma coleção de contatos (`Contatos`) e uma ou mais agendas
+(só VEVENT), servidas em `https://mail.avilaops.com/dav/` com o endereço e a
 senha da caixa (Basic sobre TLS, mesmas travas de força bruta dos outros
 protocolos). iOS/macOS descobrem sozinhos pelos well-known
 (`/.well-known/carddav` e `/.well-known/caldav`); DAVx⁵ e Thunderbird aceitam

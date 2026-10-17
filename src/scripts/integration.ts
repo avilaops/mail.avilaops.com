@@ -10,7 +10,7 @@
  *   MAIL_DATABASE_URL=... npx tsx src/scripts/integration.ts
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { SYSTEM_FOLDERS } from "../services/folders.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -653,7 +653,7 @@ check(
 );
 
 console.log("\n[21] Preferencias e perfil");
-const { getSettings, updateSettings, updateProfile } = await import("../services/settings.js");
+const { getSettings, updateSettings, updateProfile, getCalendarSettings, updateCalendarSettings } = await import("../services/settings.js");
 
 check("preferencias tem padrao seguro", (await getSettings(mailboxId)).showRemoteImages === false);
 
@@ -684,6 +684,22 @@ await esperaErro("recusa CRLF no nome de exibicao", () =>
   updateProfile(mailboxId, { displayName: "Fulano\r\nBcc: vitima@alvo.com" }), "invalido");
 await esperaErro("recusa e-mail de recuperacao invalido", () =>
   updateProfile(mailboxId, { recoveryEmail: "sem-arroba" }), "invalido");
+
+const agendaPadrao = await getCalendarSettings(mailboxId);
+check("agenda usa fuso de Sao Paulo por padrao", agendaPadrao.timezone === "America/Sao_Paulo");
+check("agenda comeca domingo por padrao", agendaPadrao.weekStart === 0);
+const agendaSalva = await updateCalendarSettings(mailboxId, {
+  timezone: "America/Manaus",
+  weekStart: 1,
+  businessHoursStart: "08:30",
+  businessHoursEnd: "17:45",
+  defaultView: "month",
+  defaultReminder: 15,
+  defaultAllDayReminder: 1440,
+});
+check("salva preferencias completas da agenda", agendaSalva.timezone === "America/Manaus" && agendaSalva.weekStart === 1 && agendaSalva.businessHoursStart === "08:30" && agendaSalva.defaultView === "month");
+await esperaErro("recusa fuso inexistente", () => updateCalendarSettings(mailboxId, { timezone: "Planeta/Marte" }), "fuso");
+await esperaErro("recusa expediente invertido", () => updateCalendarSettings(mailboxId, { businessHoursStart: "18:00", businessHoursEnd: "08:00" }), "expediente");
 
 console.log("\n[22] Contatos e enviar-como");
 const { searchContacts, listSendAs, canSendAs } = await import("../services/contacts.js");
@@ -1720,7 +1736,7 @@ check("status temporario (4.x.x)", brutoAtraso.includes("Status: 4.7.1"));
 
 
 console.log("\n[38] Migracao assistida do provedor antigo");
-const { agendarMigracao, executarMigracao, testarConexao, verMigracao, cancelarMigracao } =
+const { agendarMigracao, executarMigracao, testarConexao, verMigracao, cancelarMigracao, copiarAgendaCalDav } =
   await import("../services/migracao.js");
 
 // A "origem" e o nosso proprio servidor IMAP servindo outra caixa. Testar
@@ -2630,10 +2646,24 @@ check("visao da caixa reflete o desligamento", (await visaoDaCaixa(caixaSegura.i
 
 console.log("\n[46] CardDAV e CalDAV conferidos por um cliente independente (tsdav)");
 const { handleDav } = await import("../dav/server.js");
+const { gerarEventoIcal, lerEvento } = await import("../dav/ical.js");
+const { expandirRecorrencias } = await import("../dav/recorrencia.js");
+const { CalendarError, atualizarEvento, buscarEventos, criarEvento, excluirEvento, listarJanela, obterEvento, obterOcorrencia } = await import("../services/calendar.js");
+const { extrairIcalDaMensagem, responderConvite, resumirConvite } = await import("../services/calendar-invites.js");
+const { conviteIcalSaida, convidadosAfetados, enviarConviteAgenda, processarFilaConvitesAgenda } = await import("../services/calendar-outbound.js");
+const { varrerLembretesAgenda } = await import("../services/calendar-reminders.js");
+const { handleUserRoute } = await import("../api/me-routes.js");
+const { fail } = await import("../api/http.js");
+const { criarChave } = await import("../services/apiKeys.js");
 const { createDAVClient } = await import("tsdav");
 const { createServer: criarServidorHttp } = await import("node:http");
 
-await createMailbox({ domain: "brilhax.com.br", username: "davteste", password: "SenhaDoDav12345" });
+await createMailbox({
+  domain: "brilhax.com.br",
+  username: "davteste",
+  password: "SenhaDoDav12345",
+  mustChangePassword: false,
+});
 
 const servidorDav = criarServidorHttp((req, res) => {
   const caminho = new URL(req.url ?? "/", "http://localhost").pathname;
@@ -2647,6 +2677,21 @@ const servidorDav = criarServidorHttp((req, res) => {
 await new Promise<void>((r) => servidorDav.listen(0, "127.0.0.1", () => r()));
 const portaDav = (servidorDav.address() as { port: number }).port;
 const baseDav = `http://127.0.0.1:${portaDav}`;
+
+const servidorAgendaApi = criarServidorHttp((req, res) => {
+  const url = new URL(req.url ?? "/", "http://localhost");
+  void handleUserRoute(req, res, url.pathname, req.method ?? "GET", url)
+    .then((tratada) => {
+      if (!tratada) fail(res, 404, "Rota nao encontrada.");
+    })
+    .catch((error: unknown) => {
+      const statusCode = error instanceof CalendarError || error instanceof AuthError ? error.statusCode : 500;
+      fail(res, statusCode, error instanceof Error ? error.message : "Erro interno.");
+    });
+});
+await new Promise<void>((r) => servidorAgendaApi.listen(0, "127.0.0.1", () => r()));
+const portaAgendaApi = (servidorAgendaApi.address() as { port: number }).port;
+const baseAgendaApi = `http://127.0.0.1:${portaAgendaApi}`;
 
 // Sem credencial, nada existe.
 const semAuth = await fetch(`${baseDav}/dav/`, { method: "PROPFIND" });
@@ -2725,17 +2770,647 @@ const criacaoEvento = await clienteCal.createCalendarObject({
 });
 check("cliente cria o compromisso", criacaoEvento.ok);
 
+const eventoComFuso = [
+  "BEGIN:VCALENDAR",
+  "VERSION:2.0",
+  "PRODID:-//Teste Fuso//PT//",
+  "BEGIN:VEVENT",
+  "UID:ev-tzid-0001",
+  "SUMMARY:Compromisso em Sao Paulo",
+  "DTSTART;TZID=America/Sao_Paulo:20260903T100000",
+  "DTEND;TZID=America/Sao_Paulo:20260903T110000",
+  "END:VEVENT",
+  "END:VCALENDAR",
+  "",
+].join("\r\n");
+
+const criacaoEventoComFuso = await clienteCal.createCalendarObject({
+  calendar: agendas[0]!,
+  filename: "ev-tzid-0001.ics",
+  iCalString: eventoComFuso,
+});
+check("cliente cria compromisso com TZID", criacaoEventoComFuso.ok);
+
+const destinoDav = await resolveRecipient(credenciaisDav.username);
+if (destinoDav.kind !== "mailbox") throw new Error("caixa DAV nao resolveu para conferir o indice");
+const eventoIndexado = await prisma.mailDavItem.findFirstOrThrow({
+  where: { mailboxId: destinoDav.mailboxId, collection: "calendar", href: "ev-tzid-0001.ics", deletedAt: null },
+  select: { data: true, dtStart: true, dtEnd: true },
+});
+check("indice CalDAV converte DTSTART com TZID para UTC", eventoIndexado.dtStart?.toISOString() === "2026-09-03T13:00:00.000Z");
+check("indice CalDAV converte DTEND com TZID para UTC", eventoIndexado.dtEnd?.toISOString() === "2026-09-03T14:00:00.000Z");
+check("armazenamento preserva o iCalendar byte a byte", eventoIndexado.data === eventoComFuso);
+
+const respostaEventoComFuso = await fetch(
+  `${baseDav}/dav/calendars/davteste%40brilhax.com.br/agenda/ev-tzid-0001.ics`,
+  { headers: { Authorization: `Basic ${Buffer.from(`${credenciaisDav.username}:${credenciaisDav.password}`).toString("base64")}` } },
+);
+check(
+  "CalDAV devolve o iCalendar byte a byte",
+  respostaEventoComFuso.status === 200 && (await respostaEventoComFuso.text()) === eventoComFuso,
+);
+
+const eventoGeradoPelaApi = gerarEventoIcal({
+  uid: "ev-json-0001",
+  titulo: "Evento gerado pela API",
+  inicio: "2026-09-05T13:00:00.000Z",
+  fim: "2026-09-05T14:00:00.000Z",
+  diaInteiro: false,
+  fuso: "America/Sao_Paulo",
+  criadoEm: "2026-09-01T10:00:00.000Z",
+  modificadoEm: "2026-09-01T10:00:00.000Z",
+  dtstamp: "2026-09-01T10:00:00.000Z",
+  sequencia: 0,
+  local: "Sala CalDAV",
+  descricao: "Gerado do modelo JSON",
+  lembretes: [{ minutosAntes: 10 }],
+  convidados: [{ email: "convidado@example.com", resposta: "pendente" }],
+  organizador: "davteste@brilhax.com.br",
+  disponibilidade: "ocupado",
+});
+const criacaoEventoGerado = await clienteCal.createCalendarObject({
+  calendar: agendas[0]!,
+  filename: "ev-json-0001.ics",
+  iCalString: eventoGeradoPelaApi,
+});
+check("tsdav aceita VEVENT gerado do modelo JSON", criacaoEventoGerado.ok);
+const eventosGeradosRelidos = await clienteCal.fetchCalendarObjects({
+  calendar: agendas[0]!,
+  timeRange: { start: "2026-09-05T00:00:00.000Z", end: "2026-09-06T00:00:00.000Z" },
+});
+const corpoEventoGerado = String(eventosGeradosRelidos[0]?.data ?? "");
+check(
+  "tsdav rele o VEVENT gerado com campos essenciais",
+  eventosGeradosRelidos.length === 1 &&
+    corpoEventoGerado.includes("UID:ev-json-0001") &&
+    corpoEventoGerado.includes("SUMMARY:Evento gerado pela API") &&
+    corpoEventoGerado.includes("BEGIN:VALARM"),
+);
+
+const eventoRecorrente = eventoComFuso
+  .replace("UID:ev-tzid-0001", "UID:ev-rec-0001")
+  .replace("SUMMARY:Compromisso em Sao Paulo", "SUMMARY:Compromisso semanal")
+  .replace("END:VEVENT", "RRULE:FREQ=WEEKLY;COUNT=3\r\nEND:VEVENT");
+const criacaoEventoRecorrente = await clienteCal.createCalendarObject({
+  calendar: agendas[0]!,
+  filename: "ev-rec-0001.ics",
+  iCalString: eventoRecorrente,
+});
+check("cliente CalDAV cria evento recorrente", criacaoEventoRecorrente.ok);
+const eventoRecorrenteRelido = await clienteCal.fetchCalendarObjects({
+  calendar: agendas[0]!,
+  timeRange: { start: "2026-09-01T00:00:00.000Z", end: "2026-09-20T00:00:00.000Z" },
+});
+const corpoRecorrente = String(eventoRecorrenteRelido.find((evento) => String(evento.data).includes("UID:ev-rec-0001"))?.data ?? "");
+check(
+  "evento relido do CalDAV expande as ocorrencias no fuso",
+  JSON.stringify(
+    expandirRecorrencias(corpoRecorrente, {
+      inicio: new Date("2026-09-01T00:00:00.000Z"),
+      fim: new Date("2026-09-20T00:00:00.000Z"),
+    }).map((ocorrencia) => ocorrencia.inicio.toISOString()),
+  ) === JSON.stringify(["2026-09-03T13:00:00.000Z", "2026-09-10T13:00:00.000Z", "2026-09-17T13:00:00.000Z"]),
+);
+
+const eventoServico = await criarEvento(destinoDav.mailboxId, {
+  titulo: "Planejamento trimestral",
+  inicio: "2026-09-22T13:00:00.000Z",
+  fim: "2026-09-22T14:30:00.000Z",
+  diaInteiro: false,
+  fuso: "America/Sao_Paulo",
+  local: "Sala Horizonte",
+  descricao: "Revisar metas do trimestre",
+  disponibilidade: "ocupado",
+  lembretes: [{ minutosAntes: 15 }],
+  convidados: [],
+});
+check("servico cria evento na fonte CalDAV", eventoServico.href === `${eventoServico.uid}.ics` && eventoServico.etag.length > 0);
+check("servico obtem o evento pelo id", (await obterEvento(destinoDav.mailboxId, eventoServico.id)).uid === eventoServico.uid);
+const janelaServico = await listarJanela(
+  destinoDav.mailboxId,
+  new Date("2026-09-22T00:00:00.000Z"),
+  new Date("2026-09-23T00:00:00.000Z"),
+);
+check("servico lista evento na janela", janelaServico.some((evento) => evento.id === eventoServico.id));
+
+const eventoAtualizado = await atualizarEvento(
+  destinoDav.mailboxId,
+  eventoServico.id,
+  { titulo: "Planejamento anual", local: "Sala, Aurora" },
+  eventoServico.etag,
+);
+check(
+  "servico atualiza evento e incrementa sequencia",
+  eventoAtualizado.titulo === "Planejamento anual" && eventoAtualizado.sequencia === eventoServico.sequencia + 1 && eventoAtualizado.etag !== eventoServico.etag,
+);
+check(
+  "etag antigo na atualizacao devolve 412",
+  await (async () => {
+    try {
+      await atualizarEvento(destinoDav.mailboxId, eventoServico.id, { titulo: "Sobrescrita" }, eventoServico.etag);
+      return false;
+    } catch (error) {
+      return typeof error === "object" && error !== null && "statusCode" in error && error.statusCode === 412;
+    }
+  })(),
+);
+const [buscaTitulo = [], buscaLocalEscapado = [], buscaDescricao = []] = await Promise.all(
+  ["anual", "Sala, Aurora", "metas"].map((q) => buscarEventos(destinoDav.mailboxId, q)),
+);
+check("busca encontra titulo", buscaTitulo.some((evento) => evento.id === eventoServico.id));
+check("busca encontra local com caractere escapado", buscaLocalEscapado.some((evento) => evento.id === eventoServico.id));
+check("busca encontra descricao", buscaDescricao.some((evento) => evento.id === eventoServico.id));
+const agoraBusca = new Date();
+await prisma.mailDavItem.createMany({
+  data: Array.from({ length: 501 }, (_, indice) => ({
+    mailboxId: destinoDav.mailboxId,
+    collection: "calendar",
+    href: `busca-ruido-${indice}.ics`,
+    uid: `busca-ruido-${indice}`,
+    etag: `"busca-ruido-${indice}"`,
+    data: gerarEventoIcal({
+      uid: `busca-ruido-${indice}`,
+      titulo: `Aurora sem correspondencia ${indice}`,
+      inicio: "2035-01-01T12:00:00.000Z",
+      fim: "2035-01-01T13:00:00.000Z",
+      diaInteiro: false,
+      fuso: "UTC",
+      criadoEm: agoraBusca.toISOString(),
+      modificadoEm: agoraBusca.toISOString(),
+      dtstamp: agoraBusca.toISOString(),
+      sequencia: 0,
+      lembretes: [],
+      convidados: [],
+      disponibilidade: "ocupado",
+    }),
+    displayName: `Aurora sem correspondencia ${indice}`,
+    dtStart: new Date("2035-01-01T12:00:00.000Z"),
+    dtEnd: new Date("2035-01-01T13:00:00.000Z"),
+    recurring: false,
+    seq: 900_000n + BigInt(indice),
+  })),
+});
+check(
+  "busca nao perde resultado exato depois de mais de 500 falsos positivos",
+  (await buscarEventos(destinoDav.mailboxId, "Sala, Aurora")).some((evento) => evento.id === eventoServico.id),
+);
+await prisma.mailDavItem.deleteMany({
+  where: { mailboxId: destinoDav.mailboxId, collection: "calendar", href: { startsWith: "busca-ruido-" } },
+});
+check("busca isola outra caixa", (await buscarEventos(mailboxId, "Planejamento anual")).length === 0);
+
+const eventoConcorrente = await criarEvento(destinoDav.mailboxId, {
+  titulo: "Concorrencia",
+  inicio: "2026-09-24T13:00:00.000Z",
+  fim: "2026-09-24T14:00:00.000Z",
+  diaInteiro: false,
+  fuso: "America/Sao_Paulo",
+  disponibilidade: "ocupado",
+  lembretes: [],
+  convidados: [],
+});
+const escritasConcorrentes = await Promise.allSettled([
+  atualizarEvento(destinoDav.mailboxId, eventoConcorrente.id, { titulo: "Concorrencia A" }, eventoConcorrente.etag),
+  atualizarEvento(destinoDav.mailboxId, eventoConcorrente.id, { titulo: "Concorrencia B" }, eventoConcorrente.etag),
+]);
+check(
+  "etag funciona como CAS atomico",
+  escritasConcorrentes.filter((resultado) => resultado.status === "fulfilled").length === 1 &&
+    escritasConcorrentes.filter(
+      (resultado) => resultado.status === "rejected" && resultado.reason instanceof Error && "statusCode" in resultado.reason && resultado.reason.statusCode === 412,
+    ).length === 1,
+);
+check(
+  "servico rejeita etag ausente em runtime",
+  await (async () => {
+    try {
+      await atualizarEvento(destinoDav.mailboxId, eventoConcorrente.id, { titulo: "Sem CAS" }, undefined as never);
+      return false;
+    } catch (error) {
+      return typeof error === "object" && error !== null && "statusCode" in error && error.statusCode === 428;
+    }
+  })(),
+);
+
+const serieComExcecao = [
+  "BEGIN:VCALENDAR",
+  "VERSION:2.0",
+  "BEGIN:VEVENT",
+  "UID:ev-excecao-servico",
+  "SUMMARY:Serie mestre",
+  "LOCATION:Sala mestre",
+  "DESCRIPTION:Descricao mestre",
+  "DTSTART:20261001T130000Z",
+  "DTEND:20261001T140000Z",
+  "RRULE:FREQ=DAILY;COUNT=2",
+  "END:VEVENT",
+  "BEGIN:VEVENT",
+  "UID:ev-excecao-servico",
+  "RECURRENCE-ID:20261002T130000Z",
+  "SUMMARY:Excecao",
+  "LOCATION:Sala excecao",
+  "DESCRIPTION:Descricao excecao",
+  "DTSTART:20261002T150000Z",
+  "DTEND:20261002T163000Z",
+  "TRANSP:TRANSPARENT",
+  "END:VEVENT",
+  "END:VCALENDAR",
+  "",
+].join("\r\n");
+check(
+  "cliente cria serie com excecao para o servico",
+  (
+    await clienteCal.createCalendarObject({
+      calendar: agendas[0]!,
+      filename: "ev-excecao-servico.ics",
+      iCalString: serieComExcecao,
+    })
+  ).ok,
+);
+const itemSerieExcecao = await prisma.mailDavItem.findFirstOrThrow({
+  where: { mailboxId: destinoDav.mailboxId, href: "ev-excecao-servico.ics", deletedAt: null },
+  select: { id: true, etag: true },
+});
+const listaComExcecao = await listarJanela(
+  destinoDav.mailboxId,
+  new Date("2026-10-01T00:00:00.000Z"),
+  new Date("2026-10-03T00:00:00.000Z"),
+);
+const excecaoJson = listaComExcecao.find((evento) => evento.id === itemSerieExcecao.id && evento.recorrenciaId === "2026-10-02T13:00:00.000Z");
+check(
+  "ocorrencia destacada devolve todos os campos proprios",
+  excecaoJson?.titulo === "Excecao" &&
+    excecaoJson.local === "Sala excecao" &&
+    excecaoJson.descricao === "Descricao excecao" &&
+    excecaoJson.disponibilidade === "livre",
+);
+await atualizarEvento(destinoDav.mailboxId, itemSerieExcecao.id, { titulo: "Serie renomeada" }, itemSerieExcecao.etag);
+check(
+  "editar mestre preserva VEVENT com RECURRENCE-ID",
+  (
+    await prisma.mailDavItem.findUniqueOrThrow({ where: { id: itemSerieExcecao.id }, select: { data: true } })
+  ).data.includes("RECURRENCE-ID:20261002T130000Z"),
+);
+
+const serieEscopos = await criarEvento(destinoDav.mailboxId, {
+  titulo: "Serie para escopos",
+  inicio: "2026-10-10T13:00:00.000Z",
+  fim: "2026-10-10T14:00:00.000Z",
+  diaInteiro: false,
+  fuso: "UTC",
+  recorrencia: "FREQ=DAILY;COUNT=5",
+  disponibilidade: "ocupado",
+  lembretes: [],
+  convidados: [],
+});
+await atualizarEvento(destinoDav.mailboxId, serieEscopos.id, { titulo: "Somente a segunda" }, serieEscopos.etag, { scope: "this", recurrenceId: "2026-10-11T13:00:00.000Z" });
+let ocorrenciasEscopo = (await listarJanela(destinoDav.mailboxId, new Date("2026-10-10T00:00:00Z"), new Date("2026-10-16T00:00:00Z"))).filter((evento) => evento.id === serieEscopos.id);
+check("scope=this cria excecao sem alterar as demais", ocorrenciasEscopo.length === 5 && ocorrenciasEscopo.find((evento) => evento.recorrenciaId === "2026-10-11T13:00:00.000Z")?.titulo === "Somente a segunda" && ocorrenciasEscopo.find((evento) => evento.recorrenciaId === "2026-10-12T13:00:00.000Z")?.titulo === "Serie para escopos");
+const serieEscoposDepois = await obterEvento(destinoDav.mailboxId, serieEscopos.id);
+await excluirEvento(destinoDav.mailboxId, serieEscopos.id, serieEscoposDepois.etag, { scope: "this", recurrenceId: "2026-10-12T13:00:00.000Z" });
+ocorrenciasEscopo = (await listarJanela(destinoDav.mailboxId, new Date("2026-10-10T00:00:00Z"), new Date("2026-10-16T00:00:00Z"))).filter((evento) => evento.id === serieEscopos.id);
+check("DELETE scope=this grava EXDATE", ocorrenciasEscopo.length === 4 && !ocorrenciasEscopo.some((evento) => evento.recorrenciaId === "2026-10-12T13:00:00.000Z"));
+
+const serieSeguintes = await criarEvento(destinoDav.mailboxId, {
+  titulo: "Serie a dividir", inicio: "2026-10-20T13:00:00.000Z", fim: "2026-10-20T14:00:00.000Z", diaInteiro: false,
+  fuso: "UTC", recorrencia: "FREQ=DAILY;COUNT=5", disponibilidade: "ocupado", lembretes: [], convidados: [],
+});
+const novaSerieSeguintes = await atualizarEvento(destinoDav.mailboxId, serieSeguintes.id, { titulo: "Nova metade" }, serieSeguintes.etag, { scope: "following", recurrenceId: "2026-10-22T13:00:00.000Z" });
+const janelaSeguintes = await listarJanela(destinoDav.mailboxId, new Date("2026-10-20T00:00:00Z"), new Date("2026-11-01T00:00:00Z"));
+const partesSeguintes = janelaSeguintes.filter((evento) => evento.id === serieSeguintes.id || evento.id === novaSerieSeguintes.id);
+check("scope=following divide em UID novo sem aumentar ocorrencias", novaSerieSeguintes.uid !== serieSeguintes.uid && partesSeguintes.length === 5 && partesSeguintes.filter((evento) => evento.titulo === "Nova metade").length === 3);
+
+const avisosAgenda: Array<{ titulo: string; notificationTag?: string }> = [];
+const enviarAvisoAgenda = async (_mailboxId: string, aviso: { titulo: string; notificationTag?: string }) => { avisosAgenda.push({ titulo: aviso.titulo, notificationTag: aviso.notificationTag }); };
+await criarEvento(destinoDav.mailboxId, { titulo: "Lembrete simples", inicio: "2035-01-01T12:05:00.000Z", fim: "2035-01-01T13:05:00.000Z", diaInteiro: false, fuso: "UTC", disponibilidade: "ocupado", lembretes: [{ minutosAntes: 5 }], convidados: [] });
+await varrerLembretesAgenda({ agora: new Date("2035-01-01T12:00:00.000Z"), enviar: enviarAvisoAgenda });
+check("lembrete simples e entregue com relogio controlado", avisosAgenda.some((aviso) => aviso.titulo === "Lembrete simples"));
+check("lembrete recebe tag unica de notificacao", avisosAgenda.find((aviso) => aviso.titulo === "Lembrete simples")?.notificationTag?.startsWith("calendar:") === true);
+const quantidadeDepoisPrimeiro = avisosAgenda.length;
+await varrerLembretesAgenda({ agora: new Date("2035-01-01T12:00:00.000Z"), enviar: enviarAvisoAgenda });
+check("registro de entrega impede lembrete duplicado", avisosAgenda.length === quantidadeDepoisPrimeiro);
+await criarEvento(destinoDav.mailboxId, { titulo: "Lembrete recorrente", inicio: "2034-12-31T13:05:00.000Z", fim: "2034-12-31T14:05:00.000Z", diaInteiro: false, fuso: "UTC", recorrencia: "FREQ=DAILY;COUNT=2", disponibilidade: "ocupado", lembretes: [{ minutosAntes: 5 }], convidados: [] });
+await varrerLembretesAgenda({ agora: new Date("2035-01-01T13:00:00.000Z"), enviar: enviarAvisoAgenda });
+check("lembrete recorrente entrega a ocorrencia correta", avisosAgenda.some((aviso) => aviso.titulo === "Lembrete recorrente"));
+const editavelLembrete = await criarEvento(destinoDav.mailboxId, { titulo: "Lembrete editado", inicio: "2035-01-01T14:05:00.000Z", fim: "2035-01-01T15:05:00.000Z", diaInteiro: false, fuso: "UTC", disponibilidade: "ocupado", lembretes: [{ minutosAntes: 5 }], convidados: [] });
+await atualizarEvento(destinoDav.mailboxId, editavelLembrete.id, { inicio: "2035-01-01T16:05:00.000Z", fim: "2035-01-01T17:05:00.000Z" }, editavelLembrete.etag);
+await varrerLembretesAgenda({ agora: new Date("2035-01-01T14:00:00.000Z"), enviar: enviarAvisoAgenda });
+check("evento editado nao avisa no horario antigo", !avisosAgenda.some((aviso) => aviso.titulo === "Lembrete editado"));
+const excluidoLembrete = await criarEvento(destinoDav.mailboxId, { titulo: "Lembrete excluido", inicio: "2035-01-01T15:05:00.000Z", fim: "2035-01-01T16:05:00.000Z", diaInteiro: false, fuso: "UTC", disponibilidade: "ocupado", lembretes: [{ minutosAntes: 5 }], convidados: [] });
+await excluirEvento(destinoDav.mailboxId, excluidoLembrete.id, excluidoLembrete.etag);
+await varrerLembretesAgenda({ agora: new Date("2035-01-01T15:00:00.000Z"), enviar: enviarAvisoAgenda });
+check("evento excluido nao gera lembrete", !avisosAgenda.some((aviso) => aviso.titulo === "Lembrete excluido"));
+await updateSettings(destinoDav.mailboxId, { notifyEnabled: false });
+await criarEvento(destinoDav.mailboxId, { titulo: "Lembrete desligado", inicio: "2035-01-01T18:05:00.000Z", fim: "2035-01-01T19:05:00.000Z", diaInteiro: false, fuso: "UTC", disponibilidade: "ocupado", lembretes: [{ minutosAntes: 5 }], convidados: [] });
+await varrerLembretesAgenda({ agora: new Date("2035-01-01T18:00:00.000Z"), enviar: enviarAvisoAgenda });
+check("preferencia desligada bloqueia push e ledger SSE", !avisosAgenda.some((aviso) => aviso.titulo === "Lembrete desligado") && await prisma.calendarReminderDelivery.count({ where: { title: "Lembrete desligado" } }) === 0);
+await updateSettings(destinoDav.mailboxId, { notifyEnabled: true, notifyQuietStart: 15, notifyQuietEnd: 16 });
+await criarEvento(destinoDav.mailboxId, { titulo: "Lembrete silencioso", inicio: "2035-01-01T18:05:00.000Z", fim: "2035-01-01T19:05:00.000Z", diaInteiro: false, fuso: "UTC", disponibilidade: "ocupado", lembretes: [{ minutosAntes: 5 }], convidados: [] });
+await varrerLembretesAgenda({ agora: new Date("2035-01-01T18:00:00.000Z"), enviar: enviarAvisoAgenda });
+check("silencio noturno bloqueia push e ledger SSE", !avisosAgenda.some((aviso) => aviso.titulo === "Lembrete silencioso") && await prisma.calendarReminderDelivery.count({ where: { title: "Lembrete silencioso" } }) === 0);
+await updateSettings(destinoDav.mailboxId, { notifyQuietStart: null, notifyQuietEnd: null });
+await criarEvento(destinoDav.mailboxId, { titulo: "Lembrete com retry", inicio: "2035-01-01T19:05:00.000Z", fim: "2035-01-01T20:05:00.000Z", diaInteiro: false, fuso: "UTC", disponibilidade: "ocupado", lembretes: [{ minutosAntes: 5 }], convidados: [] });
+await varrerLembretesAgenda({ agora: new Date("2035-01-01T19:00:00.000Z"), enviar: async () => { throw new Error("push temporariamente fora"); } });
+check("falha de entrega deixa outbox pendente", (await prisma.calendarReminderDelivery.findFirst({ where: { title: "Lembrete com retry" }, select: { status: true } }))?.status === "pending");
+await varrerLembretesAgenda({ agora: new Date("2035-01-01T19:01:00.000Z"), enviar: enviarAvisoAgenda });
+check("outbox repete e conclui entrega transitoria", avisosAgenda.some((aviso) => aviso.titulo === "Lembrete com retry") && (await prisma.calendarReminderDelivery.findFirst({ where: { title: "Lembrete com retry" }, select: { status: true, attempts: true } }))?.status === "sent");
+
+await criarEvento(destinoDav.mailboxId, { titulo: "Conflito existente", inicio: "2036-02-10T14:00:00.000Z", fim: "2036-02-10T15:00:00.000Z", diaInteiro: false, fuso: "UTC", disponibilidade: "ocupado", lembretes: [], convidados: [] });
+const icalConviteRecebido = ["BEGIN:VCALENDAR", "VERSION:2.0", "METHOD:REQUEST", "BEGIN:VEVENT", "UID:convite-recebido-1", "SEQUENCE:2", "SUMMARY:Reuniao externa", "DTSTART:20360210T143000Z", "DTEND:20360210T153000Z", "LOCATION:Sala virtual", "ORGANIZER:mailto:organizador@example.com", `ATTENDEE;PARTSTAT=TENTATIVE:mailto:${credenciaisDav.username}`, "END:VEVENT", "END:VCALENDAR", ""].join("\r\n");
+const fronteiraConvite = "CONVITE-AGENDA-AVL49";
+const mimeConviteRecebido = Buffer.from([`From: Organizador <organizador@example.com>`, `To: ${credenciaisDav.username}`, "Subject: Convite de agenda", "MIME-Version: 1.0", `Content-Type: multipart/mixed; boundary=${fronteiraConvite}`, "", `--${fronteiraConvite}`, "Content-Type: text/plain; charset=utf-8", "", "Segue o convite.", `--${fronteiraConvite}`, "Content-Type: text/calendar; method=REQUEST; charset=utf-8", "Content-Disposition: attachment; filename=invite.ics", "", icalConviteRecebido, `--${fronteiraConvite}--`, ""].join("\r\n"));
+await deliverToMailbox(destinoDav, mimeConviteRecebido, null, { envelopeFrom: "organizador@example.com" });
+const mensagemConvite = (await listMessages({ mailboxId: destinoDav.mailboxId, query: "Convite de agenda" })).messages[0];
+const detalheConvite = await getMessage(destinoDav.mailboxId, mensagemConvite?.id ?? "");
+check("leitura da mensagem devolve resumo do convite", detalheConvite.convite?.uid === "convite-recebido-1" && detalheConvite.convite.titulo === "Reuniao externa" && detalheConvite.convite.local === "Sala virtual");
+check("convite identifica resposta da propria caixa", detalheConvite.convite?.minhaResposta === "talvez");
+check("convite detecta conflito com a agenda", detalheConvite.convite?.conflito === true);
+
+const serieConviteCancelada = ["BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VEVENT", "UID:serie-cancelamento-avl49", "SEQUENCE:1", "SUMMARY:Serie externa", "DTSTART:20360301T100000Z", "DTEND:20360301T110000Z", "RRULE:FREQ=DAILY;COUNT=3", "ORGANIZER:mailto:organizador@example.com", "END:VEVENT", "END:VCALENDAR", ""].join("\r\n");
+check("prepara serie para cancelamento de uma ocorrencia", (await clienteCal.createCalendarObject({ calendar: agendas[0]!, filename: "serie-cancelamento-avl49.ics", iCalString: serieConviteCancelada })).ok);
+const cancelamentoOcorrencia = ["BEGIN:VCALENDAR", "VERSION:2.0", "METHOD:CANCEL", "BEGIN:VEVENT", "UID:serie-cancelamento-avl49", "SEQUENCE:2", "SUMMARY:Serie externa", "DTSTART:20360302T100000Z", "DTEND:20360302T110000Z", "RECURRENCE-ID:20360302T100000Z", "ORGANIZER:mailto:organizador@example.com", "END:VEVENT", "END:VCALENDAR", ""].join("\r\n");
+const resumoCancelamentoOcorrencia = await resumirConvite(destinoDav.mailboxId, credenciaisDav.username, cancelamentoOcorrencia, "organizador@example.com");
+const ocorrenciasAposCancelamento = (await listarJanela(destinoDav.mailboxId, new Date("2036-03-01T00:00:00Z"), new Date("2036-03-05T00:00:00Z"))).filter((item) => item.uid === "serie-cancelamento-avl49");
+check("CANCEL recorrente aplica somente a ocorrencia indicada", resumoCancelamentoOcorrencia?.cancelamento === "aplicado" && ocorrenciasAposCancelamento.length === 2 && !ocorrenciasAposCancelamento.some((item) => item.inicio === "2036-03-02T10:00:00.000Z"));
+check("replay do mesmo CANCEL de ocorrencia e idempotente", (await resumirConvite(destinoDav.mailboxId, credenciaisDav.username, cancelamentoOcorrencia, "organizador@example.com"))?.cancelamento === "obsoleto");
+
+await criarEvento(destinoDav.mailboxId, { titulo: "Conflito na segunda ocorrencia", inicio: "2036-04-02T10:30:00.000Z", fim: "2036-04-02T11:30:00.000Z", diaInteiro: false, fuso: "UTC", disponibilidade: "ocupado", lembretes: [], convidados: [] });
+const conviteRecorrente = ["BEGIN:VCALENDAR", "VERSION:2.0", "METHOD:REQUEST", "BEGIN:VEVENT", "UID:convite-recorrente-avl49", "SEQUENCE:1", "SUMMARY:Convite recorrente", "DTSTART:20360401T100000Z", "DTEND:20360401T110000Z", "RRULE:FREQ=DAILY;COUNT=2", "ORGANIZER:mailto:organizador@example.com", "END:VEVENT", "END:VCALENDAR", ""].join("\r\n");
+check("conflito considera ocorrencias posteriores do convite", (await resumirConvite(destinoDav.mailboxId, credenciaisDav.username, conviteRecorrente, "organizador@example.com"))?.conflito === true);
+
+const serieProtegida = ["BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VEVENT", "UID:cancelamento-protegido-avl49", "SEQUENCE:3", "SUMMARY:Evento protegido", "DTSTART:20360501T100000Z", "DTEND:20360501T110000Z", "ORGANIZER:mailto:organizador@example.com", "END:VEVENT", "END:VCALENDAR", ""].join("\r\n");
+check("prepara evento protegido contra cancelamentos invalidos", (await clienteCal.createCalendarObject({ calendar: agendas[0]!, filename: "cancelamento-protegido-avl49.ics", iCalString: serieProtegida })).ok);
+const corpoCancelamento = (sequencia: number, organizador = "organizador@example.com") => ["BEGIN:VCALENDAR", "VERSION:2.0", "METHOD:CANCEL", "BEGIN:VEVENT", "UID:cancelamento-protegido-avl49", `SEQUENCE:${sequencia}`, "SUMMARY:Evento protegido", "DTSTART:20360501T100000Z", "DTEND:20360501T110000Z", `ORGANIZER:mailto:${organizador}`, "END:VEVENT", "END:VCALENDAR", ""].join("\r\n");
+check("cancelamento com organizador divergente nao altera agenda", (await resumirConvite(destinoDav.mailboxId, credenciaisDav.username, corpoCancelamento(4, "fraude@example.com"), "fraude@example.com"))?.cancelamento === "nao_confiavel");
+check("cancelamento com remetente divergente nao altera agenda", (await resumirConvite(destinoDav.mailboxId, credenciaisDav.username, corpoCancelamento(4), "fraude@example.com"))?.cancelamento === "nao_confiavel");
+check("cancelamento com sequencia igual e ignorado", (await resumirConvite(destinoDav.mailboxId, credenciaisDav.username, corpoCancelamento(3), "organizador@example.com"))?.cancelamento === "obsoleto");
+check("cancelamento com sequencia menor e ignorado", (await resumirConvite(destinoDav.mailboxId, credenciaisDav.username, corpoCancelamento(2), "organizador@example.com"))?.cancelamento === "obsoleto");
+check("cancelamento confiavel com sequencia maior e aplicado", (await resumirConvite(destinoDav.mailboxId, credenciaisDav.username, corpoCancelamento(4), "organizador@example.com"))?.cancelamento === "aplicado");
+
+const carregarFixtureConvite = (nome: string) => readFileSync(new URL(`./fixtures/calendar/${nome}`, import.meta.url), "utf8").replace(/\r?\n/g, "\r\n").replace("{{ATTENDEE}}", credenciaisDav.username);
+const entregarFixtureConvite = async (nome: string, remetente: string, assunto: string) => {
+  const ical = carregarFixtureConvite(nome).replaceAll(`mailto:${credenciaisDav.username}`, `mailto:${nome.startsWith("outlook") ? credenciaisDav.username.toUpperCase() : credenciaisDav.username}`);
+  const mime = Buffer.from([`From: ${remetente}`, `To: ${credenciaisDav.username}`, `Subject: ${assunto}`, "MIME-Version: 1.0", "Content-Type: text/calendar; method=REQUEST; charset=utf-8", "", ical].join("\r\n"));
+  await deliverToMailbox(destinoDav, mime, null, { envelopeFrom: remetente });
+  return (await listMessages({ mailboxId: destinoDav.mailboxId, query: assunto })).messages[0]?.id ?? "";
+};
+
+const mensagemGoogle = await entregarFixtureConvite("google-request.ics", "google.organizer@example.com", "Google fixture AVL50");
+const respostaGoogle = await responderConvite(destinoDav.mailboxId, mensagemGoogle, "aceito", "Confirmado");
+const eventoGoogle = await prisma.mailDavItem.findFirstOrThrow({ where: { mailboxId: destinoDav.mailboxId, uid: "google-fixture-avl50@example.com", deletedAt: null }, select: { data: true } });
+check("resposta ao convite Google grava PARTSTAT aceito", /ATTENDEE[^\r\n]*PARTSTAT=ACCEPTED[^\r\n]*mailto:/i.test(eventoGoogle.data));
+check("convite Google aceito aparece na grade", (await listarJanela(destinoDav.mailboxId, new Date("2036-07-10T00:00:00Z"), new Date("2036-07-11T00:00:00Z"))).some((item) => item.uid === "google-fixture-avl50@example.com"));
+const saidaGoogle = await prisma.outboundMessage.findUniqueOrThrow({ where: { id: respostaGoogle.queuedId }, select: { storageKey: true, recipients: true } });
+const mimeReplyGoogle = (await readRaw(saidaGoogle.storageKey)).toString("utf8");
+const icalReplyGoogle = await extrairIcalDaMensagem(Buffer.from(mimeReplyGoogle));
+const destinatariosReplyGoogle = saidaGoogle.recipients as string[];
+check("resposta Google vai somente ao organizador", destinatariosReplyGoogle.length === 1 && destinatariosReplyGoogle[0] === "google.organizer@example.com");
+check("resposta Google envia METHOD REPLY", icalReplyGoogle?.includes("METHOD:REPLY") === true);
+check("REPLY Google contem somente o attendee da caixa", (icalReplyGoogle?.match(/^ATTENDEE(?:;|:)/gim) ?? []).length === 1 && icalReplyGoogle?.includes(`mailto:${credenciaisDav.username}`) === true);
+await responderConvite(destinoDav.mailboxId, mensagemGoogle, "talvez");
+check("responder novamente atualiza sem duplicar o UID", await prisma.mailDavItem.count({ where: { mailboxId: destinoDav.mailboxId, uid: "google-fixture-avl50@example.com", deletedAt: null } }) === 1 && /PARTSTAT=TENTATIVE/i.test((await prisma.mailDavItem.findFirstOrThrow({ where: { mailboxId: destinoDav.mailboxId, uid: "google-fixture-avl50@example.com" }, select: { data: true } })).data));
+
+const mensagemOutlook = await entregarFixtureConvite("outlook-request.ics", "outlook.organizer@example.com", "Outlook fixture AVL50");
+const respostaOutlook = await responderConvite(destinoDav.mailboxId, mensagemOutlook, "recusado");
+check("convite Outlook recusado permanece no CalDAV", await prisma.mailDavItem.count({ where: { mailboxId: destinoDav.mailboxId, uid: "outlook-fixture-avl50@example.com", deletedAt: null } }) === 1);
+check("convite Outlook com attendee em caixa mista recusado fica oculto da grade", !(await listarJanela(destinoDav.mailboxId, new Date("2036-07-11T00:00:00Z"), new Date("2036-07-12T00:00:00Z"))).some((item) => item.uid === "outlook-fixture-avl50@example.com"));
+const saidaOutlook = await prisma.outboundMessage.findUniqueOrThrow({ where: { id: respostaOutlook.queuedId }, select: { storageKey: true } });
+check("resposta Outlook envia PARTSTAT recusado", (await extrairIcalDaMensagem(await readRaw(saidaOutlook.storageKey)))?.includes("PARTSTAT=DECLINED") === true);
+await esperaErro("outra caixa nao responde convite alheio", () => responderConvite(outraCaixa.id, mensagemGoogle, "aceito"), "nao encontrada");
+
+const conviteConcorrente = carregarFixtureConvite("google-request.ics").replace("google-fixture-avl50@example.com", "concorrente-avl50@example.com").replace("Google fixture meeting", "Convite concorrente");
+const mimeConcorrente = Buffer.from(["From: google.organizer@example.com", `To: ${credenciaisDav.username}`, "Subject: Concorrente AVL50", "MIME-Version: 1.0", "Content-Type: text/calendar; method=REQUEST; charset=utf-8", "", conviteConcorrente].join("\r\n"));
+await deliverToMailbox(destinoDav, mimeConcorrente, null, { envelopeFrom: "google.organizer@example.com" });
+const mensagemConcorrente = (await listMessages({ mailboxId: destinoDav.mailboxId, query: "Concorrente AVL50" })).messages[0]?.id ?? "";
+await Promise.all([responderConvite(destinoDav.mailboxId, mensagemConcorrente, "aceito"), responderConvite(destinoDav.mailboxId, mensagemConcorrente, "talvez")]);
+check("respostas iniciais concorrentes preservam recurso unico por UID", await prisma.mailDavItem.count({ where: { mailboxId: destinoDav.mailboxId, uid: "concorrente-avl50@example.com", deletedAt: null } }) === 1);
+
+const conviteNovo = carregarFixtureConvite("google-request.ics").replace("google-fixture-avl50@example.com", "versao-avl50@example.com").replace("SEQUENCE:0", "SEQUENCE:2").replace("DTSTART:20360710T130000Z", "DTSTART:20360712T150000Z").replace("DTEND:20360710T140000Z", "DTEND:20360712T160000Z");
+const mimeNovo = Buffer.from(["From: google.organizer@example.com", `To: ${credenciaisDav.username}`, "Subject: Versao nova AVL50", "MIME-Version: 1.0", "Content-Type: text/calendar; method=REQUEST; charset=utf-8", "", conviteNovo].join("\r\n"));
+await deliverToMailbox(destinoDav, mimeNovo, null, { envelopeFrom: "google.organizer@example.com" });
+const mensagemNova = (await listMessages({ mailboxId: destinoDav.mailboxId, query: "Versao nova AVL50" })).messages[0]?.id ?? "";
+await responderConvite(destinoDav.mailboxId, mensagemNova, "aceito");
+const conviteAntigo = conviteNovo.replace("SEQUENCE:2", "SEQUENCE:1").replace("DTSTART:20360712T150000Z", "DTSTART:20360710T150000Z").replace("DTEND:20360712T160000Z", "DTEND:20360710T160000Z");
+const mimeAntigo = Buffer.from(["From: google.organizer@example.com", `To: ${credenciaisDav.username}`, "Subject: Versao antiga AVL50", "MIME-Version: 1.0", "Content-Type: text/calendar; method=REQUEST; charset=utf-8", "", conviteAntigo].join("\r\n"));
+await deliverToMailbox(destinoDav, mimeAntigo, null, { envelopeFrom: "google.organizer@example.com" });
+const mensagemAntiga = (await listMessages({ mailboxId: destinoDav.mailboxId, query: "Versao antiga AVL50" })).messages[0]?.id ?? "";
+await responderConvite(destinoDav.mailboxId, mensagemAntiga, "talvez");
+const eventoVersionado = await prisma.mailDavItem.findFirstOrThrow({ where: { mailboxId: destinoDav.mailboxId, uid: "versao-avl50@example.com" }, select: { data: true } });
+const eventoVersionadoLido = lerEvento(eventoVersionado.data);
+check("resposta a REQUEST antigo nao reverte versao nova", eventoVersionadoLido?.sequence === 2 && eventoVersionadoLido.dtStart?.toISOString() === "2036-07-12T15:00:00.000Z" && eventoVersionadoLido.attendees.some((item) => item.email === credenciaisDav.username && item.resposta === "talvez") === true);
+
+const conviteForjado = carregarFixtureConvite("google-request.ics").replace("google-fixture-avl50@example.com", "forjado-avl50@example.com");
+const mimeForjado = Buffer.from(["From: attacker@example.com", `To: ${credenciaisDav.username}`, "Subject: Forjado AVL50", "MIME-Version: 1.0", "Content-Type: text/calendar; method=REQUEST; charset=utf-8", "", conviteForjado].join("\r\n"));
+await deliverToMailbox(destinoDav, mimeForjado, null, { envelopeFrom: "attacker@example.com" });
+const mensagemForjada = (await listMessages({ mailboxId: destinoDav.mailboxId, query: "Forjado AVL50" })).messages[0]?.id ?? "";
+await esperaErro("ORGANIZER divergente do remetente nao recebe REPLY", () => responderConvite(destinoDav.mailboxId, mensagemForjada, "aceito"), "nao corresponde");
+
+const mestreInstancia = carregarFixtureConvite("google-request.ics").replace("METHOD:REQUEST\r\n", "").replace("google-fixture-avl50@example.com", "instancia-avl50@example.com").replace("SEQUENCE:0", "SEQUENCE:3").replace("STATUS:CONFIRMED\r\n", "RRULE:FREQ=DAILY;COUNT=3\r\nSTATUS:CONFIRMED\r\n");
+check("prepara serie para resposta de instancia", (await clienteCal.createCalendarObject({ calendar: agendas[0]!, filename: "instancia-avl50.ics", iCalString: mestreInstancia })).ok);
+const conviteInstancia = carregarFixtureConvite("google-request.ics").replace("google-fixture-avl50@example.com", "instancia-avl50@example.com").replace("SEQUENCE:0", "SEQUENCE:4").replace("DTSTART:20360710T130000Z", "RECURRENCE-ID:20360711T130000Z\r\nDTSTART:20360711T150000Z").replace("DTEND:20360710T140000Z", "DTEND:20360711T160000Z");
+const mimeInstancia = Buffer.from(["From: google.organizer@example.com", `To: ${credenciaisDav.username}`, "Subject: Instancia AVL50", "MIME-Version: 1.0", "Content-Type: text/calendar; method=REQUEST; charset=utf-8", "", conviteInstancia].join("\r\n"));
+await deliverToMailbox(destinoDav, mimeInstancia, null, { envelopeFrom: "google.organizer@example.com" });
+const mensagemInstancia = (await listMessages({ mailboxId: destinoDav.mailboxId, query: "Instancia AVL50" })).messages[0]?.id ?? "";
+const respostaInstancia = await responderConvite(destinoDav.mailboxId, mensagemInstancia, "recusado");
+const corpoSerieInstancia = (await prisma.mailDavItem.findFirstOrThrow({ where: { mailboxId: destinoDav.mailboxId, uid: "instancia-avl50@example.com" }, select: { data: true } })).data;
+const saidaInstancia = await prisma.outboundMessage.findUniqueOrThrow({ where: { id: respostaInstancia.queuedId }, select: { storageKey: true } });
+check("resposta de instancia persiste override com PARTSTAT", /RECURRENCE-ID:20360711T130000Z[\s\S]*PARTSTAT=DECLINED/i.test(corpoSerieInstancia));
+check("REPLY de instancia preserva RECURRENCE-ID", (await extrairIcalDaMensagem(await readRaw(saidaInstancia.storageKey)))?.includes("RECURRENCE-ID:20360711T130000Z") === true);
+const janelaInstancia = (await listarJanela(destinoDav.mailboxId, new Date("2036-07-10T00:00:00Z"), new Date("2036-07-14T00:00:00Z"))).filter((item) => item.uid === "instancia-avl50@example.com");
+check("instancia recusada fica oculta sem esconder o restante da serie", janelaInstancia.length === 2 && !janelaInstancia.some((item) => item.recorrenciaId === "2036-07-11T13:00:00.000Z"));
+const ocorrenciaParaItip = await obterOcorrencia(destinoDav.mailboxId, (await prisma.mailDavItem.findFirstOrThrow({ where: { mailboxId: destinoDav.mailboxId, uid: "instancia-avl50@example.com" }, select: { id: true } })).id, "2036-07-12T13:00:00.000Z");
+check("CANCEL desta ocorrencia preserva RECURRENCE-ID sem cancelar serie", conviteIcalSaida(ocorrenciaParaItip, "CANCEL").includes("RECURRENCE-ID:20360712T130000Z") && !conviteIcalSaida(ocorrenciaParaItip, "CANCEL").includes("RANGE=THISANDFUTURE"));
+check("CANCEL seguintes declara RANGE THISANDFUTURE", conviteIcalSaida(ocorrenciaParaItip, "CANCEL", { rangeThisAndFuture: true }).includes("RECURRENCE-ID;RANGE=THISANDFUTURE:20360712T130000Z"));
+
+const eventoOrganizado = await criarEvento(destinoDav.mailboxId, {
+  titulo: "Revisao de produto", inicio: "2036-08-10T13:00:00.000Z", fim: "2036-08-10T14:00:00.000Z", diaInteiro: false, fuso: "UTC",
+  local: "Sala A", disponibilidade: "ocupado", lembretes: [], organizador: credenciaisDav.username,
+  convidados: [{ email: "convidado1@example.com", resposta: "pendente" }, { email: "convidado2@example.com", resposta: "pendente" }],
+});
+const requestOrganizado = await enviarConviteAgenda(destinoDav.mailboxId, eventoOrganizado, "REQUEST", eventoOrganizado.convidados.map((item) => item.email));
+const saidaRequestOrganizado = await prisma.outboundMessage.findUniqueOrThrow({ where: { id: requestOrganizado?.queuedId ?? "" }, select: { storageKey: true, recipients: true, externalRecipients: true } });
+const icalRequestOrganizado = await extrairIcalDaMensagem(await readRaw(saidaRequestOrganizado.storageKey));
+check("evento organizado envia REQUEST para todos os convidados", (saidaRequestOrganizado.recipients as string[]).length === 2 && saidaRequestOrganizado.externalRecipients === 2);
+check("REQUEST tem estrutura iTIP para clientes externos", icalRequestOrganizado?.includes("METHOD:REQUEST") === true && icalRequestOrganizado.includes(`ORGANIZER:mailto:${credenciaisDav.username}`) && (icalRequestOrganizado.match(/^ATTENDEE(?:;|:)/gim) ?? []).length === 2);
+
+const eventoOrganizadoAtualizado = await atualizarEvento(destinoDav.mailboxId, eventoOrganizado.id, {
+  inicio: "2036-08-10T15:00:00.000Z", fim: "2036-08-10T16:00:00.000Z", local: "Sala B",
+  convidados: [{ email: "convidado1@example.com", resposta: "pendente" }, { email: "convidado3@example.com", resposta: "pendente" }],
+}, eventoOrganizado.etag);
+const afetadosOrganizados = convidadosAfetados(eventoOrganizado, eventoOrganizadoAtualizado);
+check("edicao separa convidados atualizados e removidos", afetadosOrganizados.request.sort().join(",") === "convidado1@example.com,convidado3@example.com" && afetadosOrganizados.cancel.join(",") === "convidado2@example.com");
+const requestAtualizado = await enviarConviteAgenda(destinoDav.mailboxId, eventoOrganizadoAtualizado, "REQUEST", afetadosOrganizados.request);
+const cancelRemovido = await enviarConviteAgenda(destinoDav.mailboxId, { ...eventoOrganizadoAtualizado, convidados: eventoOrganizado.convidados.filter((item) => afetadosOrganizados.cancel.includes(item.email)) }, "CANCEL", afetadosOrganizados.cancel);
+const icalRequestAtualizado = await extrairIcalDaMensagem(await readRaw((await prisma.outboundMessage.findUniqueOrThrow({ where: { id: requestAtualizado?.queuedId ?? "" }, select: { storageKey: true } })).storageKey));
+const icalCancelRemovido = await extrairIcalDaMensagem(await readRaw((await prisma.outboundMessage.findUniqueOrThrow({ where: { id: cancelRemovido?.queuedId ?? "" }, select: { storageKey: true } })).storageKey));
+check("atualizacao envia SEQUENCE incrementada", icalRequestAtualizado?.includes("SEQUENCE:1") === true);
+check("convidado removido recebe CANCEL minimo", icalCancelRemovido?.includes("METHOD:CANCEL") === true && icalCancelRemovido.includes("STATUS:CANCELLED") && (icalCancelRemovido.match(/^ATTENDEE(?:;|:)/gim) ?? []).length === 1);
+const cancelExclusao = await enviarConviteAgenda(destinoDav.mailboxId, eventoOrganizadoAtualizado, "CANCEL", eventoOrganizadoAtualizado.convidados.map((item) => item.email));
+check("exclusao prepara cancelamento antes da lapide", (await extrairIcalDaMensagem(await readRaw((await prisma.outboundMessage.findUniqueOrThrow({ where: { id: cancelExclusao?.queuedId ?? "" }, select: { storageKey: true } })).storageKey)))?.includes("METHOD:CANCEL") === true);
+
+const eventoOutbox = await criarEvento(destinoDav.mailboxId, {
+  titulo: "Outbox transacional AVL51", inicio: "2036-09-10T13:00:00.000Z", fim: "2036-09-10T14:00:00.000Z", diaInteiro: false, fuso: "UTC",
+  local: "Sala Outbox", disponibilidade: "ocupado", lembretes: [], organizador: credenciaisDav.username,
+  convidados: [{ email: "outbox@example.com", resposta: "pendente" }],
+}, { notificarConvidados: true });
+let entregaOutbox = await prisma.calendarInviteDelivery.findFirstOrThrow({ where: { mailboxId: destinoDav.mailboxId, subject: "Convite: Outbox transacional AVL51" } });
+check("criacao grava REQUEST atomicamente na outbox", entregaOutbox.status === "pending" && entregaOutbox.method === "REQUEST" && (entregaOutbox.recipients as string[]).join() === "outbox@example.com");
+await processarFilaConvitesAgenda(new Date());
+entregaOutbox = await prisma.calendarInviteDelivery.findUniqueOrThrow({ where: { id: entregaOutbox.id } });
+check("worker entrega REQUEST pendente pela fila normal", entregaOutbox.status === "sent" && typeof entregaOutbox.outboundId === "string");
+const totalSaidasAntesRecuperacao = await prisma.outboundMessage.count({ where: { sourceKey: `calendar-invite:${entregaOutbox.id}` } });
+await prisma.calendarInviteDelivery.update({ where: { id: entregaOutbox.id }, data: { status: "processing", lastAttemptAt: new Date(Date.now() - 10 * 60_000), deliveredAt: null, outboundId: null } });
+await processarFilaConvitesAgenda(new Date());
+check("recuperacao apos crash reutiliza outbound sem duplicar convite", await prisma.outboundMessage.count({ where: { sourceKey: `calendar-invite:${entregaOutbox.id}` } }) === totalSaidasAntesRecuperacao && (await prisma.calendarInviteDelivery.findUniqueOrThrow({ where: { id: entregaOutbox.id } })).status === "sent");
+const totalOutboxAntesCasFalho = await prisma.calendarInviteDelivery.count({ where: { mailboxId: destinoDav.mailboxId } });
+await esperaErro("CAS falho nao deixa convite orfao na outbox", () => atualizarEvento(destinoDav.mailboxId, eventoOutbox.id, { local: "Sala impossivel" }, "etag-incorreto", { notificarConvidados: true }), "mudou desde");
+check("rollback da mutacao tambem reverte outbox", await prisma.calendarInviteDelivery.count({ where: { mailboxId: destinoDav.mailboxId } }) === totalOutboxAntesCasFalho);
+const eventoOutboxAtualizado = await atualizarEvento(destinoDav.mailboxId, eventoOutbox.id, { local: "Sala Outbox 2" }, eventoOutbox.etag, { notificarConvidados: true });
+check("edicao atomica cria novo REQUEST pendente", await prisma.calendarInviteDelivery.count({ where: { mailboxId: destinoDav.mailboxId, status: "pending", method: "REQUEST", subject: "Convite: Outbox transacional AVL51" } }) === 1);
+await excluirEvento(destinoDav.mailboxId, eventoOutbox.id, eventoOutboxAtualizado.etag, { notificarConvidados: true });
+check("exclusao e CANCEL entram na mesma transacao", await prisma.calendarInviteDelivery.count({ where: { mailboxId: destinoDav.mailboxId, status: "pending", method: "CANCEL", subject: "Cancelado: Outbox transacional AVL51" } }) === 1);
+
+const totalDavAntesOrganizadorInvalido = await prisma.mailDavItem.count({ where: { mailboxId: destinoDav.mailboxId, collection: "calendar", deletedAt: null } });
+await esperaErro("organizador sem send-as e recusado antes da mutacao", () => criarEvento(destinoDav.mailboxId, {
+  titulo: "Organizador proibido", inicio: "2036-09-11T13:00:00.000Z", fim: "2036-09-11T14:00:00.000Z", diaInteiro: false, fuso: "UTC", disponibilidade: "ocupado", lembretes: [], organizador: "forjado@example.com", convidados: [{ email: "alvo@example.com", resposta: "pendente" }],
+}, { notificarConvidados: true }), "nao pode enviar como");
+check("falha de send-as nao persiste evento nem outbox", await prisma.mailDavItem.count({ where: { mailboxId: destinoDav.mailboxId, collection: "calendar", deletedAt: null } }) === totalDavAntesOrganizadorInvalido && await prisma.calendarInviteDelivery.count({ where: { mailboxId: destinoDav.mailboxId, subject: "Convite: Organizador proibido" } }) === 0);
+
+const serieRemoveConvidado = await criarEvento(destinoDav.mailboxId, {
+  titulo: "Serie remove convidado", inicio: "2036-09-20T13:00:00.000Z", fim: "2036-09-20T14:00:00.000Z", diaInteiro: false, fuso: "UTC", recorrencia: "FREQ=DAILY;COUNT=3", disponibilidade: "ocupado", lembretes: [], organizador: credenciaisDav.username,
+  convidados: [{ email: "fica@example.com", resposta: "pendente" }, { email: "sai@example.com", resposta: "pendente" }],
+});
+await atualizarEvento(destinoDav.mailboxId, serieRemoveConvidado.id, { convidados: [{ email: "fica@example.com", resposta: "pendente" }] }, serieRemoveConvidado.etag, { scope: "this", recurrenceId: "2036-09-21T13:00:00.000Z", notificarConvidados: true });
+const cancelOcorrenciaRemovido = await prisma.calendarInviteDelivery.findFirstOrThrow({ where: { mailboxId: destinoDav.mailboxId, method: "CANCEL", subject: "Cancelado: Serie remove convidado", status: "pending" }, orderBy: { nextAttemptAt: "desc" } });
+check("scope=this envia CANCEL somente ao convidado removido", (cancelOcorrenciaRemovido.recipients as string[]).join() === "sai@example.com" && cancelOcorrenciaRemovido.ical.includes("RECURRENCE-ID:20360921T130000Z") && (cancelOcorrenciaRemovido.ical.match(/^ATTENDEE(?:;|:)/gim) ?? []).length === 1);
+
+const authRespostaAgenda = { spf: "pass", dkim: "pass", dkimDomain: "example.com", dmarc: "pass", dmarcPolicy: "reject", arc: "none", headers: "" };
+const replyConvidado = conviteIcalSaida(eventoOrganizadoAtualizado, "REQUEST")
+  .replace("METHOD:REQUEST", "METHOD:REPLY")
+  .replace(/ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:convidado1@example\.com/i, "ATTENDEE;PARTSTAT=ACCEPTED:mailto:convidado1@example.com");
+const mimeReplyConvidado = Buffer.from(["From: convidado1@example.com", `To: ${credenciaisDav.username}`, "Subject: Aceito: Revisao de produto", "MIME-Version: 1.0", "Content-Type: text/calendar; method=REPLY; charset=utf-8", "", replyConvidado].join("\r\n"));
+const totalMensagensAntesReply = await prisma.message.count({ where: { mailboxId: destinoDav.mailboxId } });
+await deliverToMailbox(destinoDav, mimeReplyConvidado, authRespostaAgenda, { envelopeFrom: "convidado1@example.com" });
+const organizadoAposReply = await obterEvento(destinoDav.mailboxId, eventoOrganizadoAtualizado.id);
+check("REPLY autenticado atualiza PARTSTAT do convidado", organizadoAposReply.convidados.find((item) => item.email === "convidado1@example.com")?.resposta === "aceito");
+check("mensagem REPLY continua entregue normalmente", await prisma.message.count({ where: { mailboxId: destinoDav.mailboxId } }) === totalMensagensAntesReply + 1);
+const replyNaoAutenticado = conviteIcalSaida(organizadoAposReply, "REQUEST")
+  .replace("METHOD:REQUEST", "METHOD:REPLY")
+  .replace(/ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:convidado3@example\.com/i, "ATTENDEE;PARTSTAT=DECLINED:mailto:convidado3@example.com");
+await deliverToMailbox(destinoDav, Buffer.from(["From: convidado3@example.com", `To: ${credenciaisDav.username}`, "Subject: Forjado REPLY", "MIME-Version: 1.0", "Content-Type: text/calendar; method=REPLY; charset=utf-8", "", replyNaoAutenticado].join("\r\n")), { ...authRespostaAgenda, dmarc: "fail", spf: "fail", dkim: "fail" }, { envelopeFrom: "convidado3@example.com" });
+check("REPLY sem SPF DKIM DMARC nao altera evento", (await obterEvento(destinoDav.mailboxId, eventoOrganizadoAtualizado.id)).convidados.find((item) => item.email === "convidado3@example.com")?.resposta === "pendente");
+const aliasOrganizadorReply = await prisma.mailAlias.create({ data: { domainId: destinoDav.domainId, localPart: "agenda-reply", destination: credenciaisDav.username } });
+const replyOrganizadorDivergente = replyConvidado
+  .replace(`ORGANIZER:mailto:${credenciaisDav.username}`, "ORGANIZER:mailto:agenda-reply@brilhax.com.br")
+  .replace("PARTSTAT=ACCEPTED:mailto:convidado1@example.com", "PARTSTAT=DECLINED:mailto:convidado1@example.com");
+await deliverToMailbox(destinoDav, Buffer.from(["From: convidado1@example.com", `To: ${credenciaisDav.username}`, "Subject: Organizer divergente", "MIME-Version: 1.0", "Content-Type: text/calendar; method=REPLY; charset=utf-8", "", replyOrganizadorDivergente].join("\r\n")), authRespostaAgenda, { envelopeFrom: "convidado1@example.com" });
+check("REPLY nao troca organizador mesmo quando ambos sao send-as validos", (await obterEvento(destinoDav.mailboxId, eventoOrganizadoAtualizado.id)).convidados.find((item) => item.email === "convidado1@example.com")?.resposta === "aceito");
+await prisma.mailAlias.delete({ where: { id: aliasOrganizadorReply.id } });
+
+const serieRespostaRecebida = await criarEvento(destinoDav.mailboxId, {
+  titulo: "Serie recebe REPLY", inicio: "2036-10-10T13:00:00.000Z", fim: "2036-10-10T14:00:00.000Z", diaInteiro: false, fuso: "UTC", recorrencia: "FREQ=DAILY;COUNT=3", disponibilidade: "ocupado", lembretes: [], organizador: credenciaisDav.username,
+  convidados: [{ email: "recorrente@example.com", resposta: "pendente" }],
+});
+const ocorrenciaResposta = await obterOcorrencia(destinoDav.mailboxId, serieRespostaRecebida.id, "2036-10-11T13:00:00.000Z");
+const replyOcorrenciaAdulterado = conviteIcalSaida(ocorrenciaResposta, "REQUEST")
+  .replace("METHOD:REQUEST", "METHOD:REPLY")
+  .replace("PARTSTAT=NEEDS-ACTION:mailto:recorrente@example.com", "PARTSTAT=ACCEPTED:mailto:recorrente@example.com")
+  .replace("DTSTART:20361011T130000Z", "DTSTART:20361011T230000Z")
+  .replace("DTEND:20361011T140000Z", "DTEND:20361012T000000Z");
+await deliverToMailbox(destinoDav, Buffer.from(["From: recorrente@example.com", `To: ${credenciaisDav.username}`, "Subject: Reply recorrente", "MIME-Version: 1.0", "Content-Type: text/calendar; method=REPLY; charset=utf-8", "", replyOcorrenciaAdulterado].join("\r\n")), authRespostaAgenda, { envelopeFrom: "recorrente@example.com" });
+const ocorrenciaAposReply = await obterOcorrencia(destinoDav.mailboxId, serieRespostaRecebida.id, "2036-10-11T13:00:00.000Z");
+check("REPLY recorrente altera somente PARTSTAT e ignora horario do convidado", ocorrenciaAposReply.inicio === "2036-10-11T13:00:00.000Z" && ocorrenciaAposReply.fim === "2036-10-11T14:00:00.000Z" && ocorrenciaAposReply.convidados[0]?.resposta === "aceito");
+const serieOverrideTzid = [
+  "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Avila Ops//Mail//PT-BR", "BEGIN:VEVENT", "UID:reply-tzid-avl52", `ORGANIZER:mailto:${credenciaisDav.username}`,
+  "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:tzid-guest@example.com", "SEQUENCE:2", "SUMMARY:Override TZID", "DTSTART;TZID=America/New_York:20361010T090000", "DTEND;TZID=America/New_York:20361010T100000", "RRULE:FREQ=DAILY;COUNT=3", "END:VEVENT",
+  "BEGIN:VEVENT", "UID:reply-tzid-avl52", `ORGANIZER:mailto:${credenciaisDav.username}`, "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:tzid-guest@example.com", "SEQUENCE:2", "SUMMARY:Override TZID", "RECURRENCE-ID;TZID=America/New_York:20361011T090000", "DTSTART;TZID=America/New_York:20361011T090000", "DTEND;TZID=America/New_York:20361011T100000", "END:VEVENT", "END:VCALENDAR", "",
+].join("\r\n");
+check("prepara override TZID para REPLY equivalente UTC", (await clienteCal.createCalendarObject({ calendar: agendas[0]!, filename: "reply-tzid-avl52.ics", iCalString: serieOverrideTzid })).ok);
+const replyUtcEquivalente = ["BEGIN:VCALENDAR", "VERSION:2.0", "METHOD:REPLY", "BEGIN:VEVENT", "UID:reply-tzid-avl52", `ORGANIZER:mailto:${credenciaisDav.username}`, "ATTENDEE;PARTSTAT=ACCEPTED:mailto:tzid-guest@example.com", "SEQUENCE:2", "RECURRENCE-ID:20361011T130000Z", "DTSTART:20361011T230000Z", "DTEND:20361012T000000Z", "END:VEVENT", "END:VCALENDAR", ""].join("\r\n");
+await deliverToMailbox(destinoDav, Buffer.from(["From: tzid-guest@example.com", `To: ${credenciaisDav.username}`, "Subject: Reply UTC equivalente", "MIME-Version: 1.0", "Content-Type: text/calendar; method=REPLY; charset=utf-8", "", replyUtcEquivalente].join("\r\n")), authRespostaAgenda, { envelopeFrom: "tzid-guest@example.com" });
+const corpoOverrideTzid = (await prisma.mailDavItem.findFirstOrThrow({ where: { mailboxId: destinoDav.mailboxId, uid: "reply-tzid-avl52" }, select: { data: true } })).data;
+check("REPLY UTC substitui override TZID equivalente sem duplicar", (corpoOverrideTzid.match(/^RECURRENCE-ID(?:;|:)/gim) ?? []).length === 1 && corpoOverrideTzid.includes("ATTENDEE;PARTSTAT=ACCEPTED:mailto:tzid-guest@example.com"));
+const replyRecorrenciaInvalida = replyUtcEquivalente.replace("RECURRENCE-ID:20361011T130000Z", "RECURRENCE-ID;TZID=Fuso/Inexistente:20361011T090000").replace("PARTSTAT=ACCEPTED", "PARTSTAT=DECLINED");
+await deliverToMailbox(destinoDav, Buffer.from(["From: tzid-guest@example.com", `To: ${credenciaisDav.username}`, "Subject: Reply recurrence invalida", "MIME-Version: 1.0", "Content-Type: text/calendar; method=REPLY; charset=utf-8", "", replyRecorrenciaInvalida].join("\r\n")), authRespostaAgenda, { envelopeFrom: "tzid-guest@example.com" });
+const corpoAposRecorrenciaInvalida = (await prisma.mailDavItem.findFirstOrThrow({ where: { mailboxId: destinoDav.mailboxId, uid: "reply-tzid-avl52" }, select: { data: true } })).data;
+check("RECURRENCE-ID invalido nao altera mestre nem override", corpoAposRecorrenciaInvalida === corpoOverrideTzid);
+
+const eventoOutlookServico = eventoComFuso
+  .replace("UID:ev-tzid-0001", "UID:ev-outlook-servico")
+  .replace(/America\/Sao_Paulo/g, "E. South America Standard Time");
+check(
+  "cliente cria evento com TZID Outlook para o servico",
+  (
+    await clienteCal.createCalendarObject({
+      calendar: agendas[0]!,
+      filename: "ev-outlook-servico.ics",
+      iCalString: eventoOutlookServico,
+    })
+  ).ok,
+);
+const itemOutlookServico = await prisma.mailDavItem.findFirstOrThrow({
+  where: { mailboxId: destinoDav.mailboxId, href: "ev-outlook-servico.ics", deletedAt: null },
+  select: { id: true, etag: true },
+});
+check(
+  "evento Outlook pode ser editado pelo servico",
+  (await atualizarEvento(destinoDav.mailboxId, itemOutlookServico.id, { titulo: "Outlook editado" }, itemOutlookServico.etag)).fuso ===
+    "America/Sao_Paulo",
+);
+
+const serieGrande = eventoCliente
+  .replace("UID:ev-0001", "UID:ev-serie-grande")
+  .replace("END:VEVENT", "RRULE:FREQ=DAILY;COUNT=1001\r\nEND:VEVENT");
+check(
+  "cliente cria serie grande",
+  (
+    await clienteCal.createCalendarObject({ calendar: agendas[0]!, filename: "ev-serie-grande.ics", iCalString: serieGrande })
+  ).ok,
+);
+const itemSerieGrande = await prisma.mailDavItem.findFirstOrThrow({
+  where: { mailboxId: destinoDav.mailboxId, href: "ev-serie-grande.ics", deletedAt: null },
+  select: { id: true },
+});
+check(
+  "serie com mais de mil ocorrencias nao desaparece silenciosamente",
+  (
+    await listarJanela(destinoDav.mailboxId, new Date("2026-09-01T00:00:00.000Z"), new Date("2029-06-01T00:00:00.000Z"))
+  ).filter((evento) => evento.id === itemSerieGrande.id).length === 1001,
+);
+check(
+  "etag antigo na exclusao devolve 412",
+  await (async () => {
+    try {
+      await excluirEvento(destinoDav.mailboxId, eventoServico.id, eventoServico.etag);
+      return false;
+    } catch (error) {
+      return typeof error === "object" && error !== null && "statusCode" in error && error.statusCode === 412;
+    }
+  })(),
+);
+await excluirEvento(destinoDav.mailboxId, eventoServico.id, eventoAtualizado.etag);
+check(
+  "servico exclui como lapide DAV",
+  (await prisma.mailDavItem.findUniqueOrThrow({ where: { id: eventoServico.id }, select: { deletedAt: true } })).deletedAt !== null,
+);
+
 const dentroDaJanela = await clienteCal.fetchCalendarObjects({
   calendar: agendas[0]!,
   timeRange: { start: "2026-09-01T00:00:00.000Z", end: "2026-09-02T00:00:00.000Z" },
 });
-check("time-range que cobre o evento o devolve", dentroDaJanela.length === 1);
+check(
+  "time-range que cobre o evento o devolve",
+  dentroDaJanela.some((evento) => String(evento.data).includes("UID:ev-0001")),
+);
 
 const foraDaJanela = await clienteCal.fetchCalendarObjects({
   calendar: agendas[0]!,
   timeRange: { start: "2026-10-01T00:00:00.000Z", end: "2026-10-02T00:00:00.000Z" },
 });
-check("time-range fora nao devolve nada", foraDaJanela.length === 0);
+check(
+  "time-range fora nao devolve o evento",
+  !foraDaJanela.some((evento) => String(evento.data).includes("UID:ev-0001")),
+);
 
 // --- Preconditions e posse, no arame ---
 const authDav = `Basic ${Buffer.from("davteste@brilhax.com.br:SenhaDoDav12345").toString("base64")}`;
@@ -2787,7 +3462,473 @@ check(
 );
 check("GET do excluido e 404", (await fetch(urlContato, { headers: { Authorization: authDav } })).status === 404);
 
+// --- API JSON da agenda ---
+const sessaoAgenda = await login({
+  address: credenciaisDav.username,
+  password: credenciaisDav.password,
+  ip: "203.0.113.146",
+});
+const authAgenda = { Authorization: `Bearer ${sessaoAgenda.accessToken}` };
+const respostaExcecaoAgenda = await fetch(
+  `${baseAgendaApi}/v1/me/calendar/events?from=2026-10-01T00:00:00.000Z&to=2026-10-03T00:00:00.000Z`,
+  { headers: authAgenda },
+);
+const ocorrenciasExcecaoAgenda = (await respostaExcecaoAgenda.json()) as {
+  events: Array<{ uid: string; recorrenciaId: string; titulo: string; inicio: string }>;
+};
+const serieExcecaoRecebida = ocorrenciasExcecaoAgenda.events
+  .filter((evento) => evento.uid === "ev-excecao-servico")
+  .map((evento) => ({ recorrenciaId: evento.recorrenciaId, inicio: evento.inicio, titulo: evento.titulo }))
+  .sort((a, b) => a.recorrenciaId.localeCompare(b.recorrenciaId));
+const serieExcecaoEsperada = [
+      { recorrenciaId: "2026-10-01T13:00:00.000Z", inicio: "2026-10-01T13:00:00.000Z", titulo: "Serie renomeada" },
+      { recorrenciaId: "2026-10-02T13:00:00.000Z", inicio: "2026-10-02T15:00:00.000Z", titulo: "Excecao" },
+    ];
+check(
+  "serie CalDAV com excecao aparece corretamente na API JSON",
+  JSON.stringify(serieExcecaoRecebida) === JSON.stringify(serieExcecaoEsperada),
+  `recebido: ${JSON.stringify(serieExcecaoRecebida)}`,
+);
+check(
+  "agenda JSON exige autenticacao",
+  (await fetch(`${baseAgendaApi}/v1/me/calendar/events?from=2026-11-01T00:00:00.000Z&to=2026-11-02T00:00:00.000Z`)).status === 401,
+);
+const chaveAgenda = await criarChave({ mailboxId: destinoDav.mailboxId, name: "agenda bloqueada", scope: "mailbox" });
+check(
+  "agenda JSON continua vedada a chave de API",
+  (
+    await fetch(`${baseAgendaApi}/v1/me/calendar/events?from=2026-11-01T00:00:00.000Z&to=2026-11-02T00:00:00.000Z`, {
+      headers: { Authorization: `Bearer ${chaveAgenda.token}` },
+    })
+  ).status === 403,
+);
+check("agenda JSON exige from e to", (await fetch(`${baseAgendaApi}/v1/me/calendar/events`, { headers: authAgenda })).status === 422);
+check(
+  "agenda JSON recusa janela invertida",
+  (
+    await fetch(`${baseAgendaApi}/v1/me/calendar/events?from=2026-11-02T00:00:00.000Z&to=2026-11-01T00:00:00.000Z`, {
+      headers: authAgenda,
+    })
+  ).status === 422,
+);
+check(
+  "agenda JSON limita janela a 100 dias",
+  (
+    await fetch(`${baseAgendaApi}/v1/me/calendar/events?from=2026-01-01T00:00:00.000Z&to=2026-05-01T00:00:00.001Z`, {
+      headers: authAgenda,
+    })
+  ).status === 422,
+);
+
+const urlColecaoAgenda = `${baseDav}/dav/calendars/davteste%40brilhax.com.br/agenda/`;
+const syncAgendaAntes = await fetch(urlColecaoAgenda, {
+  method: "REPORT",
+  headers: { Authorization: authDav, "Content-Type": "application/xml", Depth: "0" },
+  body: '<?xml version="1.0"?><d:sync-collection xmlns:d="DAV:"><d:sync-token/><d:sync-level>1</d:sync-level><d:prop><d:getetag/></d:prop></d:sync-collection>',
+});
+const corpoSyncAgendaAntes = await syncAgendaAntes.text();
+const tokenSyncAgendaAntes = corpoSyncAgendaAntes.match(/<d:sync-token>([^<]+)<\/d:sync-token>/)?.[1] ?? "";
+check("sync inicial da agenda devolve token", syncAgendaAntes.status === 207 && tokenSyncAgendaAntes.startsWith("avila-mail-sync-"));
+
+const controladorSseAgenda = new AbortController();
+const respostaSseAgenda = await fetch(`${baseAgendaApi}/v1/me/events`, { headers: authAgenda, signal: controladorSseAgenda.signal });
+const leitorSseAgenda = respostaSseAgenda.body!.getReader();
+const decodificadorSseAgenda = new TextDecoder();
+const prontoSseAgenda = decodificadorSseAgenda.decode((await leitorSseAgenda.read()).value);
+check("SSE da agenda conecta antes da mudanca", respostaSseAgenda.status === 200 && prontoSseAgenda.includes("event: ready"));
+
+const respostaCriarAgenda = await fetch(`${baseAgendaApi}/v1/me/calendar/events`, {
+  method: "POST",
+  headers: { ...authAgenda, "Content-Type": "application/json" },
+  body: JSON.stringify({
+    titulo: "Evento pela API",
+    inicio: "2026-11-10T13:00:00.000Z",
+    fim: "2026-11-10T14:00:00.000Z",
+    diaInteiro: false,
+    fuso: "America/Sao_Paulo",
+    local: "Sala API",
+    descricao: "Busca rota JSON",
+    disponibilidade: "ocupado",
+    lembretes: [],
+    convidados: [],
+  }),
+});
+const eventoAgendaApi = (await respostaCriarAgenda.json()) as { id: string; uid: string; etag: string; titulo: string };
+check("agenda JSON cria evento", respostaCriarAgenda.status === 201 && eventoAgendaApi.titulo === "Evento pela API" && eventoAgendaApi.etag.length > 0);
+let dadosSseAgenda = "";
+const limiteSseAgenda = Date.now() + 12_000;
+while (!dadosSseAgenda.includes("event: calendar") && Date.now() < limiteSseAgenda) {
+  const trecho = await Promise.race([
+    leitorSseAgenda.read(),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), Math.max(1, limiteSseAgenda - Date.now()))),
+  ]);
+  if (!trecho || trecho.done) break;
+  dadosSseAgenda += decodificadorSseAgenda.decode(trecho.value);
+}
+controladorSseAgenda.abort();
+check("SSE avisa quando dav_calendar_seq avanca", dadosSseAgenda.includes("event: calendar") && /"seq":"\d+"/.test(dadosSseAgenda));
+const eventoApiNoCalDav = (await clienteCal.fetchCalendarObjects({
+  calendar: agendas[0]!,
+  timeRange: { start: "2026-11-10T00:00:00.000Z", end: "2026-11-11T00:00:00.000Z" },
+})).find((evento) => String(evento.data).includes(`UID:${eventoAgendaApi.uid}`));
+const uidEventoAgendaApi = String(eventoApiNoCalDav?.data ?? "").match(/(?:^|\r?\n)UID:([^\r\n]+)/)?.[1] ?? "";
+check("evento criado pela API aparece no calendar-query CalDAV", uidEventoAgendaApi.length > 0);
+const syncAgendaDepois = await fetch(urlColecaoAgenda, {
+  method: "REPORT",
+  headers: { Authorization: authDav, "Content-Type": "application/xml", Depth: "0" },
+  body: `<?xml version="1.0"?><d:sync-collection xmlns:d="DAV:"><d:sync-token>${tokenSyncAgendaAntes}</d:sync-token><d:sync-level>1</d:sync-level><d:prop><d:getetag/></d:prop></d:sync-collection>`,
+});
+const corpoSyncAgendaDepois = await syncAgendaDepois.text();
+check(
+  "evento criado pela API aparece no sync-collection CalDAV",
+  syncAgendaDepois.status === 207 && corpoSyncAgendaDepois.includes(`${uidEventoAgendaApi}.ics`),
+);
+const respostaListaAgenda = await fetch(
+  `${baseAgendaApi}/v1/me/calendar/events?from=2026-11-10T00:00:00.000Z&to=2026-11-11T00:00:00.000Z`,
+  { headers: authAgenda },
+);
+const listaAgendaApi = (await respostaListaAgenda.json()) as { events: Array<{ id: string }> };
+check("agenda JSON lista a janela", respostaListaAgenda.status === 200 && listaAgendaApi.events.some((evento) => evento.id === eventoAgendaApi.id));
+check(
+  "agenda JSON obtem detalhe",
+  (await fetch(`${baseAgendaApi}/v1/me/calendar/events/${eventoAgendaApi.id}`, { headers: authAgenda })).status === 200,
+);
+const respostaBuscaAgenda = await fetch(`${baseAgendaApi}/v1/me/calendar/search?q=rota%20JSON`, { headers: authAgenda });
+const buscaAgendaApi = (await respostaBuscaAgenda.json()) as { events: Array<{ id: string }> };
+check("agenda JSON busca eventos", respostaBuscaAgenda.status === 200 && buscaAgendaApi.events.some((evento) => evento.id === eventoAgendaApi.id));
+check(
+  "agenda JSON exige If-Match no PATCH",
+  (
+    await fetch(`${baseAgendaApi}/v1/me/calendar/events/${eventoAgendaApi.id}`, {
+      method: "PATCH",
+      headers: { ...authAgenda, "Content-Type": "application/json" },
+      body: JSON.stringify({ titulo: "Sem precondicao" }),
+    })
+  ).status === 428,
+);
+const respostaAtualizarAgenda = await fetch(`${baseAgendaApi}/v1/me/calendar/events/${eventoAgendaApi.id}`, {
+  method: "PATCH",
+  headers: { ...authAgenda, "Content-Type": "application/json", "If-Match": eventoAgendaApi.etag },
+  body: JSON.stringify({ titulo: "Evento atualizado pela API" }),
+});
+const eventoAgendaAtualizado = (await respostaAtualizarAgenda.json()) as { etag: string; titulo: string };
+check(
+  "agenda JSON atualiza e devolve novo etag",
+  respostaAtualizarAgenda.status === 200 && eventoAgendaAtualizado.titulo === "Evento atualizado pela API" && eventoAgendaAtualizado.etag !== eventoAgendaApi.etag,
+);
+check(
+  "agenda JSON devolve 412 para etag antigo",
+  (
+    await fetch(`${baseAgendaApi}/v1/me/calendar/events/${eventoAgendaApi.id}`, {
+      method: "PATCH",
+      headers: { ...authAgenda, "Content-Type": "application/json", "If-Match": eventoAgendaApi.etag },
+      body: JSON.stringify({ titulo: "Conflito" }),
+    })
+  ).status === 412,
+);
+const sessaoOutraCaixa = await login({ address: "contato@brilhax.com.br", password: SENHA_NOVA, ip: "203.0.113.147" });
+check(
+  "agenda JSON isola eventos entre caixas",
+  (
+    await fetch(`${baseAgendaApi}/v1/me/calendar/events/${eventoAgendaApi.id}`, {
+      headers: { Authorization: `Bearer ${sessaoOutraCaixa.accessToken}` },
+    })
+  ).status === 404,
+);
+check(
+  "agenda JSON exige If-Match no DELETE",
+  (await fetch(`${baseAgendaApi}/v1/me/calendar/events/${eventoAgendaApi.id}`, { method: "DELETE", headers: authAgenda })).status === 428,
+);
+check(
+  "agenda JSON exclui com etag atual",
+  (
+    await fetch(`${baseAgendaApi}/v1/me/calendar/events/${eventoAgendaApi.id}`, {
+      method: "DELETE",
+      headers: { ...authAgenda, "If-Match": eventoAgendaAtualizado.etag },
+    })
+  ).status === 200,
+);
+check(
+  "agenda JSON nao rele evento excluido",
+  (await fetch(`${baseAgendaApi}/v1/me/calendar/events/${eventoAgendaApi.id}`, { headers: authAgenda })).status === 404,
+);
+
+const uidRoundtripDav = "roundtrip-dav-api-0001";
+const corpoRoundtripDav = gerarEventoIcal({
+  uid: uidRoundtripDav,
+  titulo: "Criado no CalDAV",
+  inicio: "2026-12-03T13:00:00.000Z",
+  fim: "2026-12-03T14:00:00.000Z",
+  diaInteiro: false,
+  fuso: "America/Sao_Paulo",
+  criadoEm: new Date().toISOString(),
+  modificadoEm: new Date().toISOString(),
+  dtstamp: new Date().toISOString(),
+  sequencia: 0,
+  lembretes: [],
+  convidados: [],
+  disponibilidade: "ocupado",
+});
+check(
+  "tsdav cria evento para a API JSON",
+  (await clienteCal.createCalendarObject({ calendar: agendas[0]!, filename: `${uidRoundtripDav}.ics`, iCalString: corpoRoundtripDav })).ok,
+);
+const listaRoundtripDav = await fetch(
+  `${baseAgendaApi}/v1/me/calendar/events?from=2026-12-03T00:00:00.000Z&to=2026-12-04T00:00:00.000Z`,
+  { headers: authAgenda },
+);
+const eventoRoundtripDav = ((await listaRoundtripDav.json()) as { events: Array<{ id: string; uid: string; etag: string; titulo: string }> }).events.find(
+  (evento) => evento.uid === uidRoundtripDav,
+);
+check("evento criado no tsdav aparece na API JSON", eventoRoundtripDav?.titulo === "Criado no CalDAV");
+
+const objetoRoundtripDav = (await clienteCal.fetchCalendarObjects({
+  calendar: agendas[0]!,
+  objectUrls: [`${urlColecaoAgenda}${uidRoundtripDav}.ics`],
+  useMultiGet: true,
+}))[0];
+if (!eventoRoundtripDav || !objetoRoundtripDav) throw new Error("roundtrip CalDAV nao foi carregado");
+const corpoRoundtripEditado = String(objetoRoundtripDav.data).replace("SUMMARY:Criado no CalDAV", "SUMMARY:Editado no CalDAV");
+check(
+  "tsdav edita evento para a API JSON",
+  (await clienteCal.updateCalendarObject({ calendarObject: { ...objetoRoundtripDav, data: corpoRoundtripEditado } })).ok,
+);
+const detalheRoundtripEditado = await fetch(`${baseAgendaApi}/v1/me/calendar/events/${eventoRoundtripDav.id}`, { headers: authAgenda });
+const eventoRoundtripEditado = (await detalheRoundtripEditado.json()) as { etag: string; titulo: string };
+check("edicao do tsdav aparece na API JSON", detalheRoundtripEditado.status === 200 && eventoRoundtripEditado.titulo === "Editado no CalDAV");
+check(
+  "etag anterior ao update CalDAV devolve 412 na API JSON",
+  (
+    await fetch(`${baseAgendaApi}/v1/me/calendar/events/${eventoRoundtripDav.id}`, {
+      method: "PATCH",
+      headers: { ...authAgenda, "Content-Type": "application/json", "If-Match": eventoRoundtripDav.etag },
+      body: JSON.stringify({ titulo: "Conflito entre protocolos" }),
+    })
+  ).status === 412,
+);
+check(
+  "tsdav exclui evento para a API JSON",
+  (await clienteCal.deleteCalendarObject({ calendarObject: { ...objetoRoundtripDav, data: corpoRoundtripEditado, etag: eventoRoundtripEditado.etag } })).ok,
+);
+check(
+  "exclusao do tsdav aparece na API JSON",
+  (await fetch(`${baseAgendaApi}/v1/me/calendar/events/${eventoRoundtripDav.id}`, { headers: authAgenda })).status === 404,
+);
+
+// --- faxina das lapides e expiracao do sync-token (RFC 6578) ---
+const lapideAntiga = new Date(Date.now() - 91 * 86_400_000);
+check(
+  "prepara lapide antiga de contato",
+  (await prisma.mailDavItem.updateMany({
+    where: { mailboxId: destinoDav.mailboxId, collection: "contacts", href: "cli-0001.vcf", deletedAt: { not: null } },
+    data: { deletedAt: lapideAntiga },
+  })).count === 1,
+);
+check(
+  "prepara lapide antiga de agenda",
+  (await prisma.mailDavItem.updateMany({
+    where: { mailboxId: destinoDav.mailboxId, collection: "calendar", href: `${uidRoundtripDav}.ics`, deletedAt: { not: null } },
+    data: { deletedAt: lapideAntiga },
+  })).count === 1,
+);
+const { limparLapidesDav } = await import("../dav/store.js");
+const lapidesRemovidas = await limparLapidesDav();
+check("faxina remove lapide antiga de contato", lapidesRemovidas.contacts >= 1);
+check("faxina remove lapide antiga de agenda", lapidesRemovidas.calendar >= 1);
+check(
+  "faxina apaga fisicamente as duas lapides",
+  (await prisma.mailDavItem.count({
+    where: {
+      mailboxId: destinoDav.mailboxId,
+      OR: [
+        { collection: "contacts", href: "cli-0001.vcf" },
+        { collection: "calendar", href: `${uidRoundtripDav}.ics` },
+      ],
+    },
+  })) === 0,
+);
+
+const syncContatoExpirado = await fetch(`${baseDav}/dav/addressbooks/davteste%40brilhax.com.br/contatos/`, {
+  method: "REPORT",
+  headers: { Authorization: authDav, "Content-Type": "application/xml", Depth: "0" },
+  body: `<?xml version="1.0"?><d:sync-collection xmlns:d="DAV:"><d:sync-token>${tokenSync}</d:sync-token><d:sync-level>1</d:sync-level><d:prop><d:getetag/></d:prop></d:sync-collection>`,
+});
+const corpoSyncContatoExpirado = await syncContatoExpirado.text();
+check("token antigo de contatos recebe 403", syncContatoExpirado.status === 403);
+check("erro de contatos anuncia DAV:valid-sync-token", corpoSyncContatoExpirado.includes("valid-sync-token"));
+
+const syncAgendaExpirado = await fetch(urlColecaoAgenda, {
+  method: "REPORT",
+  headers: { Authorization: authDav, "Content-Type": "application/xml", Depth: "0" },
+  body: `<?xml version="1.0"?><d:sync-collection xmlns:d="DAV:"><d:sync-token>${tokenSyncAgendaAntes}</d:sync-token><d:sync-level>1</d:sync-level><d:prop><d:getetag/></d:prop></d:sync-collection>`,
+});
+const corpoSyncAgendaExpirado = await syncAgendaExpirado.text();
+check("token antigo da agenda recebe 403", syncAgendaExpirado.status === 403);
+check("erro da agenda anuncia DAV:valid-sync-token", corpoSyncAgendaExpirado.includes("valid-sync-token"));
+
+const corpoSyncInicialVazio =
+  '<?xml version="1.0"?><d:sync-collection xmlns:d="DAV:"><d:sync-token/><d:sync-level>1</d:sync-level><d:prop><d:getetag/></d:prop></d:sync-collection>';
+const novoSyncContatos = await fetch(`${baseDav}/dav/addressbooks/davteste%40brilhax.com.br/contatos/`, {
+  method: "REPORT",
+  headers: { Authorization: authDav, "Content-Type": "application/xml", Depth: "0" },
+  body: corpoSyncInicialVazio,
+});
+check(
+  "novo sync inicial de contatos conclui sem o item excluido",
+  novoSyncContatos.status === 207 && !(await novoSyncContatos.text()).includes("cli-0001.vcf"),
+);
+const novoSyncAgenda = await fetch(urlColecaoAgenda, {
+  method: "REPORT",
+  headers: { Authorization: authDav, "Content-Type": "application/xml", Depth: "0" },
+  body: corpoSyncInicialVazio,
+});
+check(
+  "novo sync inicial da agenda conclui sem o item excluido",
+  novoSyncAgenda.status === 207 && !(await novoSyncAgenda.text()).includes(`${uidRoundtripDav}.ics`),
+);
+
+const seqDepoisDaFaxina = await prisma.mailbox.findUniqueOrThrow({
+  where: { id: destinoDav.mailboxId },
+  select: { davContactsSeq: true, davCalendarSeq: true },
+});
+for (const [rotulo, url, futuro] of [
+  ["contatos", `${baseDav}/dav/addressbooks/davteste%40brilhax.com.br/contatos/`, seqDepoisDaFaxina.davContactsSeq + 1n],
+  ["agenda", urlColecaoAgenda, seqDepoisDaFaxina.davCalendarSeq + 1n],
+] as const) {
+  const respostaFutura = await fetch(url, {
+    method: "REPORT",
+    headers: { Authorization: authDav, "Content-Type": "application/xml", Depth: "0" },
+    body: `<?xml version="1.0"?><d:sync-collection xmlns:d="DAV:"><d:sync-token>avila-mail-sync-${futuro}</d:sync-token><d:sync-level>1</d:sync-level><d:prop><d:getetag/></d:prop></d:sync-collection>`,
+  });
+  check(
+    `token futuro de ${rotulo} recebe 403 DAV:valid-sync-token`,
+    respostaFutura.status === 403 && (await respostaFutura.text()).includes("valid-sync-token"),
+  );
+}
+
+const pisoMonotono = seqDepoisDaFaxina.davContactsSeq + 10n;
+await prisma.mailbox.update({ where: { id: destinoDav.mailboxId }, data: { davContactsMinSeq: pisoMonotono } });
+await prisma.mailDavItem.create({
+  data: {
+    mailboxId: destinoDav.mailboxId,
+    collection: "contacts",
+    href: "lapide-atrasada.vcf",
+    uid: "lapide-atrasada",
+    etag: "removida",
+    data: "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:lapide-atrasada\r\nFN:Removida\r\nEND:VCARD\r\n",
+    seq: 1n,
+    deletedAt: lapideAntiga,
+  },
+});
+await limparLapidesDav();
+check(
+  "faxinas fora de ordem nunca reduzem o piso de sync",
+  (await prisma.mailbox.findUniqueOrThrow({ where: { id: destinoDav.mailboxId }, select: { davContactsMinSeq: true } })).davContactsMinSeq === pisoMonotono,
+);
+
+const tituloHostilAgenda = "<script>alert(1)</script>\r\nATTENDEE:mailto:intruso@example.com";
+const descricaoHostilAgenda = "</script><img src=x onerror=alert(1)>\r\nBEGIN:VEVENT";
+const respostaHostilAgenda = await fetch(`${baseAgendaApi}/v1/me/calendar/events`, {
+  method: "POST",
+  headers: { ...authAgenda, "Content-Type": "application/json" },
+  body: JSON.stringify({
+    titulo: tituloHostilAgenda,
+    descricao: descricaoHostilAgenda,
+    inicio: "2026-12-05T13:00:00.000Z",
+    fim: "2026-12-05T14:00:00.000Z",
+    diaInteiro: false,
+    fuso: "UTC",
+    disponibilidade: "ocupado",
+    lembretes: [],
+    convidados: [],
+  }),
+});
+const eventoHostilAgenda = (await respostaHostilAgenda.json()) as { id: string; uid: string; etag: string; titulo: string; descricao: string };
+const objetoHostilAgenda = (await clienteCal.fetchCalendarObjects({
+  calendar: agendas[0]!,
+  timeRange: { start: "2026-12-05T00:00:00.000Z", end: "2026-12-06T00:00:00.000Z" },
+})).find((evento) => String(evento.data).includes(`UID:${eventoHostilAgenda.uid}`));
+const corpoHostilAgenda = String(objetoHostilAgenda?.data ?? "");
+const normalizarQuebras = (texto: string) => texto.replace(/\r\n|\r/g, "\n");
+check("conteudo hostil e aceito como texto pela API", respostaHostilAgenda.status === 201);
+check(
+  "titulo hostil preserva o texto no roundtrip",
+  eventoHostilAgenda.titulo === tituloHostilAgenda.replace(/\r\n|\r|\n/g, " "),
+);
+check(
+  "descricao hostil preserva o texto no roundtrip",
+  normalizarQuebras(eventoHostilAgenda.descricao) === normalizarQuebras(descricaoHostilAgenda),
+);
+check(
+  "conteudo hostil nao cria outro VEVENT",
+  corpoHostilAgenda.split(/\r?\n/).filter((linha) => linha === "BEGIN:VEVENT").length === 1,
+);
+check(
+  "conteudo hostil nao injeta propriedade ATTENDEE",
+  !corpoHostilAgenda.split(/\r?\n/).includes("ATTENDEE:mailto:intruso@example.com"),
+);
+await fetch(`${baseAgendaApi}/v1/me/calendar/events/${eventoHostilAgenda.id}`, {
+  method: "DELETE",
+  headers: { ...authAgenda, "If-Match": eventoHostilAgenda.etag },
+});
+
+console.log("\n[46.1] Varias agendas por caixa");
+const respostaAgendasIniciais = await fetch(`${baseAgendaApi}/v1/me/calendar/calendars`, { headers: authAgenda });
+const agendasIniciais = (await respostaAgendasIniciais.json()) as { calendars: Array<{ id: string; nome: string; cor: string; padrao: boolean }> };
+check("API cria a agenda padrao sob demanda", respostaAgendasIniciais.status === 200 && agendasIniciais.calendars.some((item) => item.padrao && item.nome === "Agenda"));
+const chaveAgendaLeitura = await criarChave({ mailboxId: destinoDav.mailboxId, name: "CRM leitura", scope: "agenda:ler" });
+const chaveAgendaEscrita = await criarChave({ mailboxId: destinoDav.mailboxId, name: "CRM escrita", scope: "agenda:escrever" });
+const authAgendaLeitura = { Authorization: `Bearer ${chaveAgendaLeitura.token}` };
+const authAgendaEscrita = { Authorization: `Bearer ${chaveAgendaEscrita.token}` };
+check("chave agenda:ler acessa somente leitura da agenda", (await fetch(`${baseAgendaApi}/v1/me/calendar/calendars`, { headers: authAgendaLeitura })).status === 200);
+check("chave agenda:ler nao cria eventos", (await fetch(`${baseAgendaApi}/v1/me/calendar/events`, { method: "POST", headers: { ...authAgendaLeitura, "Content-Type": "application/json" }, body: "{}" })).status === 403);
+check("chave agenda nao acessa mensagens", (await fetch(`${baseAgendaApi}/v1/me/messages`, { headers: authAgendaEscrita })).status === 403);
+const eventoExternoResposta = await fetch(`${baseAgendaApi}/v1/me/calendar/events`, { method: "POST", headers: { ...authAgendaEscrita, "Content-Type": "application/json" }, body: JSON.stringify({ titulo: "Visita do CRM", inicio: "2026-12-07T13:00:00.000Z", fim: "2026-12-07T14:00:00.000Z", diaInteiro: false, fuso: "UTC", disponibilidade: "ocupado", origem: "crm", linkOrigem: "https://crm.avilaops.com/visitas/123", lembretes: [], convidados: [] }) });
+const eventoExterno = (await eventoExternoResposta.json()) as { origem?: string; linkOrigem?: string };
+check("chave agenda:escrever cria evento com origem e link", eventoExternoResposta.status === 201 && eventoExterno.origem === "crm" && eventoExterno.linkOrigem === "https://crm.avilaops.com/visitas/123");
+const respostaAgendaTrabalho = await fetch(`${baseAgendaApi}/v1/me/calendar/calendars`, { method: "POST", headers: { ...authAgenda, "Content-Type": "application/json" }, body: JSON.stringify({ name: "Trabalho", color: "#7C3AED" }) });
+const agendaTrabalho = (await respostaAgendaTrabalho.json()) as { id: string; nome: string; cor: string; quantidadeEventos: number };
+check("API cria uma segunda agenda com cor", respostaAgendaTrabalho.status === 201 && agendaTrabalho.nome === "Trabalho" && agendaTrabalho.cor === "#7C3AED");
+const respostaEventoTrabalho = await fetch(`${baseAgendaApi}/v1/me/calendar/events`, { method: "POST", headers: { ...authAgenda, "Content-Type": "application/json" }, body: JSON.stringify({ agendaId: agendaTrabalho.id, titulo: "Evento da equipe", inicio: "2026-12-08T13:00:00.000Z", fim: "2026-12-08T14:00:00.000Z", diaInteiro: false, fuso: "UTC", disponibilidade: "ocupado", lembretes: [], convidados: [] }) });
+const eventoTrabalho = (await respostaEventoTrabalho.json()) as { id: string; href: string; etag: string; agendaId: string; cor: string };
+check("evento pertence a agenda selecionada e herda sua cor", respostaEventoTrabalho.status === 201 && eventoTrabalho.agendaId === agendaTrabalho.id && eventoTrabalho.cor === "#7C3AED");
+const agendaPadraoMulti = agendasIniciais.calendars.find((item) => item.padrao)!;
+const respostaMoverEvento = await fetch(`${baseAgendaApi}/v1/me/calendar/events/${eventoTrabalho.id}`, { method: "PATCH", headers: { ...authAgenda, "Content-Type": "application/json", "If-Match": eventoTrabalho.etag }, body: JSON.stringify({ agendaId: agendaPadraoMulti.id }) });
+const eventoMovido = (await respostaMoverEvento.json()) as { agendaId: string };
+const linhasMovidas = await prisma.mailDavItem.findMany({ where: { mailboxId: destinoDav.mailboxId, href: eventoTrabalho.href }, select: { calendarId: true, deletedAt: true } });
+check("mover evento grava adicao no destino e lapide na origem", respostaMoverEvento.status === 200 && eventoMovido.agendaId === agendaPadraoMulti.id && linhasMovidas.some((item) => item.calendarId === agendaPadraoMulti.id && item.deletedAt === null) && linhasMovidas.some((item) => item.calendarId === agendaTrabalho.id && item.deletedAt !== null));
+const basicDav = { Authorization: `Basic ${Buffer.from(`${credenciaisDav.username}:${credenciaisDav.password}`).toString("base64")}` };
+const descobertaMulti = await fetch(`${baseDav}/dav/calendars/${encodeURIComponent(credenciaisDav.username)}/`, { method: "PROPFIND", headers: { ...basicDav, Depth: "1" } });
+const xmlDescobertaMulti = await descobertaMulti.text();
+check("CalDAV anuncia todas as agendas", descobertaMulti.status === 207 && xmlDescobertaMulti.includes(agendaTrabalho.id) && xmlDescobertaMulti.includes("#7C3AED"));
+const proppatchTrabalho = await fetch(`${baseDav}/dav/calendars/${encodeURIComponent(credenciaisDav.username)}/${agendaTrabalho.id}/`, { method: "PROPPATCH", headers: { ...basicDav, "Content-Type": "application/xml" }, body: '<?xml version="1.0"?><d:propertyupdate xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav"><d:set><d:prop><d:displayname>Projetos</d:displayname><cal:calendar-color>#059669</cal:calendar-color></d:prop></d:set></d:propertyupdate>' });
+check("PROPPATCH renomeia e recolore a agenda", proppatchTrabalho.status === 207 && (await prisma.mailCalendar.findUniqueOrThrow({ where: { id: agendaTrabalho.id } })).name === "Projetos" && (await prisma.mailCalendar.findUniqueOrThrow({ where: { id: agendaTrabalho.id } })).color === "#059669");
+const mkcalendar = await fetch(`${baseDav}/dav/calendars/${encodeURIComponent(credenciaisDav.username)}/caldav-extra/`, { method: "MKCALENDAR", headers: { ...basicDav, "Content-Type": "application/xml" }, body: '<?xml version="1.0"?><cal:mkcalendar xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav"><d:set><d:prop><d:displayname>Pessoal</d:displayname><cal:calendar-color>#DC2626</cal:calendar-color></d:prop></d:set></cal:mkcalendar>' });
+check("MKCALENDAR cria uma colecao funcional", mkcalendar.status === 201 && await prisma.mailCalendar.count({ where: { href: "caldav-extra", mailboxId: destinoDav.mailboxId, name: "Pessoal" } }) === 1);
+const deleteCalendar = await fetch(`${baseDav}/dav/calendars/${encodeURIComponent(credenciaisDav.username)}/caldav-extra/`, { method: "DELETE", headers: basicDav });
+check("DELETE remove a colecao CalDAV", deleteCalendar.status === 204 && await prisma.mailCalendar.count({ where: { href: "caldav-extra", mailboxId: destinoDav.mailboxId } }) === 0);
+const arquivoImportacao = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Teste//AVL54//PT-BR", "BEGIN:VEVENT", "UID:importado-avl54-a", "SUMMARY:Importado A", "DTSTART:20261209T100000Z", "DTEND:20261209T110000Z", "END:VEVENT", "BEGIN:VEVENT", "UID:importado-avl54-b", "SUMMARY:Importado B", "DTSTART:20261210T100000Z", "DTEND:20261210T110000Z", "END:VEVENT", "END:VCALENDAR", ""].join("\r\n");
+const uploadIcs = await storeUpload({ mailboxId: destinoDav.mailboxId, filename: "agenda.ics", contentType: "text/calendar", contentBase64: Buffer.from(arquivoImportacao).toString("base64") });
+const respostaImportacao = await fetch(`${baseAgendaApi}/v1/me/calendar/import`, { method: "POST", headers: { ...authAgenda, "Content-Type": "application/json" }, body: JSON.stringify({ uploadId: uploadIcs.id, agendaId: agendaTrabalho.id }) });
+const relatorioImportacao = (await respostaImportacao.json()) as { importados: number; ignorados: number; erros: number };
+check("importacao separa VEVENTs em itens", respostaImportacao.status === 200 && relatorioImportacao.importados === 2 && relatorioImportacao.ignorados === 0 && relatorioImportacao.erros === 0);
+const uploadRepetido = await storeUpload({ mailboxId: destinoDav.mailboxId, filename: "agenda.ics", contentType: "text/calendar", contentBase64: Buffer.from(arquivoImportacao).toString("base64") });
+const respostaRepetida = await fetch(`${baseAgendaApi}/v1/me/calendar/import`, { method: "POST", headers: { ...authAgenda, "Content-Type": "application/json" }, body: JSON.stringify({ uploadId: uploadRepetido.id, agendaId: agendaTrabalho.id }) });
+const relatorioRepetido = (await respostaRepetida.json()) as { importados: number; ignorados: number; erros: number };
+check("importacao ignora UIDs repetidos", relatorioRepetido.importados === 0 && relatorioRepetido.ignorados === 2);
+const respostaExportacao = await fetch(`${baseAgendaApi}/v1/me/calendar/export?agendaId=${agendaTrabalho.id}`, { headers: authAgenda });
+const corpoExportado = await respostaExportacao.text();
+check("exportacao devolve um VCALENDAR com todos os eventos da agenda", respostaExportacao.status === 200 && respostaExportacao.headers.get("content-type")?.startsWith("text/calendar") === true && (corpoExportado.match(/BEGIN:VCALENDAR/g) ?? []).length === 1 && corpoExportado.includes("UID:importado-avl54-a") && corpoExportado.includes("UID:importado-avl54-b"));
+const eventosAntesMigracao = await prisma.mailDavItem.count({ where: { mailboxId: outraCaixa.id, collection: "calendar", deletedAt: null } });
+const migracaoAgenda = await copiarAgendaCalDav({ mailboxId: outraCaixa.id, url: `${baseDav}/dav`, user: credenciaisDav.username, password: credenciaisDav.password });
+check("migracao CalDAV traz eventos do provedor antigo", migracaoAgenda.copiados > 0 && await prisma.mailDavItem.count({ where: { mailboxId: outraCaixa.id, collection: "calendar", deletedAt: null } }) === eventosAntesMigracao + migracaoAgenda.copiados);
+const migracaoAgendaRepetida = await copiarAgendaCalDav({ mailboxId: outraCaixa.id, url: `${baseDav}/dav`, user: credenciaisDav.username, password: credenciaisDav.password });
+check("migracao CalDAV ignora UIDs repetidos", migracaoAgendaRepetida.copiados === 0 && migracaoAgendaRepetida.ignorados >= migracaoAgenda.copiados);
+const excluirTrabalho = await fetch(`${baseAgendaApi}/v1/me/calendar/calendars/${agendaTrabalho.id}`, { method: "DELETE", headers: authAgenda });
+check("excluir agenda remove seus eventos e preserva a padrao", excluirTrabalho.status === 200 && await prisma.mailDavItem.count({ where: { mailboxId: destinoDav.mailboxId, calendarId: agendaTrabalho.id } }) === 0 && await prisma.mailDavItem.count({ where: { id: eventoTrabalho.id, calendarId: agendaPadraoMulti.id, deletedAt: null } }) === 1 && await prisma.mailCalendar.count({ where: { mailboxId: destinoDav.mailboxId, isDefault: true } }) === 1);
+
 await new Promise<void>((r) => servidorDav.close(() => r()));
+await new Promise<void>((r) => servidorAgendaApi.close(() => r()));
 
 console.log("\n[47] Conferencia diaria de DNS");
 {

@@ -39,6 +39,8 @@ export interface EnqueueInput {
    * quando o prazo vence, porque ele busca por nextAttemptAt <= agora.
    */
   delaySeconds?: number;
+  /** Identidade estavel do produtor; repeticoes devolvem a mesma fila. */
+  sourceKey?: string;
 }
 
 /**
@@ -60,6 +62,10 @@ async function contarExternos(recipients: string[]): Promise<number> {
 }
 
 export async function enqueueOutbound(input: EnqueueInput): Promise<{ id: string }> {
+  if (input.sourceKey) {
+    const existente = await prisma.outboundMessage.findUnique({ where: { sourceKey: input.sourceKey }, select: { id: true } });
+    if (existente) return existente;
+  }
   const sender = parseAddress(input.envelopeFrom);
   const raw = input.sign !== false && sender ? await signMessage(sender.domain, input.raw) : input.raw;
 
@@ -72,6 +78,7 @@ export async function enqueueOutbound(input: EnqueueInput): Promise<{ id: string
       envelopeFrom: input.envelopeFrom,
       recipients: input.recipients,
       subject: input.subject ?? null,
+      sourceKey: input.sourceKey ?? null,
       storageKey: blob.storageKey,
       sizeBytes: blob.sizeBytes,
       status: "queued",

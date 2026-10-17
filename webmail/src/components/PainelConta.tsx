@@ -9,6 +9,8 @@ import { FiltrosCaixa } from "./FiltrosCaixa";
 import { MigracaoCaixa } from "./MigracaoCaixa";
 import { VerificacaoDuasEtapas } from "./VerificacaoDuasEtapas";
 import { CampoSenha } from "./CampoSenha";
+import { ConfiguracaoAgenda } from "./ConfiguracaoAgenda";
+import type { PreferenciasAgenda } from "@/lib/tipos";
 
 /**
  * Tela de conta: perfil, assinatura, ausencia, preferencias e dispositivos.
@@ -89,6 +91,7 @@ const campo =
 
 export function PainelConta() {
   const [prefs, setPrefs] = useState<Preferencias | null>(null);
+  const [prefsAgenda, setPrefsAgenda] = useState<PreferenciasAgenda | null>(null);
   const [perfil, setPerfil] = useState<Perfil>({ displayName: "", recoveryEmail: "" });
   const [dispositivos, setDispositivos] = useState<Dispositivo[]>([]);
   const [endereco, setEndereco] = useState("");
@@ -113,11 +116,13 @@ export function PainelConta() {
   useEffect(() => {
     void (async () => {
       try {
-        const [preferencias, caixa] = await Promise.all([
+        const [preferencias, preferenciasAgenda, caixa] = await Promise.all([
           api<Preferencias>("/me/settings"),
+          api<PreferenciasAgenda>("/me/calendar/settings"),
           api<{ displayName: string | null; address: string; isAdmin?: boolean }>("/me"),
         ]);
         setPrefs(preferencias);
+        setPrefsAgenda(preferenciasAgenda);
         setPerfil((atual) => ({ ...atual, displayName: caixa.displayName ?? "" }));
         setEndereco(caixa.address);
         setEhAdmin(caixa.isAdmin === true);
@@ -397,6 +402,10 @@ export function PainelConta() {
       >
         <AvisosDeMensagem />
       </Secao>
+
+      {prefsAgenda && <Secao titulo="Agenda" descricao="Fuso, semana, expediente, lembretes e sincronização CalDAV.">
+        <ConfiguracaoAgenda inicial={prefsAgenda} endereco={endereco} />
+      </Secao>}
 
       <Secao
         titulo="Filtros"

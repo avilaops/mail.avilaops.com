@@ -10,10 +10,14 @@ import { HttpError, bearerToken, fail, json, readBody, clientIp } from "./http.j
 import { handleUserRoute } from "./me-routes.js";
 import { AuthError } from "../services/session.js";
 import { MessageError } from "../services/messages.js";
+import { CalendarError } from "../services/calendar.js";
+import { CalendarInviteError } from "../services/calendar-invites.js";
 import { MigracaoError } from "../services/migracao.js";
 import { ComposeError } from "../services/compose.js";
 import { FolderError } from "../services/folders.js";
 import { RuleError } from "../services/rules.js";
+import { iniciarLembretesAgenda } from "../services/calendar-reminders.js";
+import { iniciarFilaConvitesAgenda } from "../services/calendar-outbound.js";
 import { ApiKeyError, autenticarChave, escopoDoToken } from "../services/apiKeys.js";
 import { MercadoPagoError, assinaturaValida } from "../lib/mercadopago.js";
 import { orcamentoDeHoje } from "../mta/warmup.js";
@@ -487,6 +491,8 @@ function start(): void {
           error instanceof ProvisioningError ||
           error instanceof AuthError ||
           error instanceof MessageError ||
+          error instanceof CalendarError ||
+          error instanceof CalendarInviteError ||
           error instanceof MigracaoError ||
           error instanceof ComposeError ||
           error instanceof FolderError ||
@@ -541,8 +547,12 @@ function start(): void {
   server.listen(config.api.port, config.api.bind, () => {
     log.info("api de provisionamento no ar", { bind: config.api.bind, port: config.api.port });
   });
+  const pararLembretes = iniciarLembretesAgenda();
+  const pararConvites = iniciarFilaConvitesAgenda();
 
   const shutdown = async () => {
+    pararLembretes();
+    pararConvites();
     server.close();
     await disconnect();
     process.exit(0);

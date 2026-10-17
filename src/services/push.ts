@@ -93,29 +93,31 @@ export interface AvisoPush {
   titulo: string;
   corpo: string;
   messageId?: string;
+  url?: string;
+  notificationTag?: string;
   /**
    * "seguranca" ignora as preferencias do cliente: conta invadida as 3h da
    * manha nao pode esperar o fim do silencio noturno. "mensagem" respeita.
    */
-  tipo?: "mensagem" | "seguranca";
+  tipo?: "mensagem" | "seguranca" | "calendario";
   /** Caiu na Entrada? Regra que arquivou a mensagem nao precisa interromper. */
   naEntrada?: boolean;
 }
 
 /** Hora atual no fuso da operacao — e nele que o cliente pensou o silencio. */
-function horaLocal(): number {
+function horaLocal(agora = new Date()): number {
   const formatada = new Intl.DateTimeFormat("pt-BR", {
     timeZone: config.timezone,
     hour: "numeric",
     hour12: false,
-  }).format(new Date());
+  }).format(agora);
   return Number.parseInt(formatada, 10);
 }
 
 /** Janela que cruza a meia-noite (22h -> 7h) e o caso normal, nao a excecao. */
-function dentroDoSilencio(inicio: number | null, fim: number | null): boolean {
+function dentroDoSilencio(inicio: number | null, fim: number | null, agora = new Date()): boolean {
   if (inicio === null || fim === null || inicio === fim) return false;
-  const hora = horaLocal();
+  const hora = horaLocal(agora);
   return inicio < fim ? hora >= inicio && hora < fim : hora >= inicio || hora < fim;
 }
 
@@ -125,7 +127,7 @@ function dentroDoSilencio(inicio: number | null, fim: number | null): boolean {
  * Aviso que chega na hora errada e pior que aviso nenhum: a pessoa desliga a
  * permissao e perde tambem os alertas de seguranca, que sao os que importam.
  */
-async function permitido(mailboxId: string, aviso: AvisoPush): Promise<boolean> {
+export async function avisoPermitido(mailboxId: string, aviso: AvisoPush, agora = new Date()): Promise<boolean> {
   if (aviso.tipo === "seguranca") return true;
 
   const prefs = await prisma.mailboxSettings.findUnique({
@@ -136,7 +138,7 @@ async function permitido(mailboxId: string, aviso: AvisoPush): Promise<boolean> 
 
   if (!prefs.notifyEnabled) return false;
   if (prefs.notifyOnlyInbox && aviso.naEntrada === false) return false;
-  if (dentroDoSilencio(prefs.notifyQuietStart, prefs.notifyQuietEnd)) return false;
+  if (dentroDoSilencio(prefs.notifyQuietStart, prefs.notifyQuietEnd, agora)) return false;
   return true;
 }
 
@@ -148,20 +150,20 @@ async function permitido(mailboxId: string, aviso: AvisoPush): Promise<boolean> 
  * inexistente (404) ou expirada (410) e apagada na hora — navegador
  * desinstalado nao vira fila de erro eterna.
  */
-export async function enviarAviso(mailboxId: string, aviso: AvisoPush): Promise<void> {
-  if (!pushDisponivel()) return;
-  if (!(await permitido(mailboxId, aviso))) return;
+export async function enviarAviso(mailboxId: string, aviso: AvisoPush): Promise<{ tentativas: number; enviados: number }> {
+  if (!pushDisponivel()) return { tentativas: 0, enviados: 0 };
+  if (!(await avisoPermitido(mailboxId, aviso))) return { tentativas: 0, enviados: 0 };
   garantirConfiguracao();
 
   const inscricoes = await prisma.mailPushSubscription.findMany({
     where: { mailboxId },
     select: { id: true, endpoint: true, p256dh: true, auth: true },
   });
-  if (inscricoes.length === 0) return;
+  if (inscricoes.length === 0) return { tentativas: 0, enviados: 0 };
 
   const conteudo = JSON.stringify(aviso);
 
-  await Promise.all(
+  const resultados = await Promise.all(
     inscricoes.map(async (inscricao) => {
       try {
         await webpush.sendNotification(
@@ -172,19 +174,22 @@ export async function enviarAviso(mailboxId: string, aviso: AvisoPush): Promise<
         await prisma.mailPushSubscription
           .update({ where: { id: inscricao.id }, data: { lastSentAt: new Date() } })
           .catch(() => undefined);
+        return true;
       } catch (erro) {
         const status = (erro as { statusCode?: number }).statusCode;
         if (status === 404 || status === 410) {
           await prisma.mailPushSubscription.delete({ where: { id: inscricao.id } }).catch(() => undefined);
           log.info("inscricao de push expirada, removida", { mailboxId, status });
-          return;
+          return false;
         }
         log.warn("falha ao enviar push", {
           mailboxId,
           status,
           erro: erro instanceof Error ? erro.message : String(erro),
         });
+        return false;
       }
     }),
   );
+  return { tentativas: inscricoes.length, enviados: resultados.filter(Boolean).length };
 }

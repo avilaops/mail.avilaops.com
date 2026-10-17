@@ -23,6 +23,8 @@ interface Migracao {
   totalMessages: number;
   copiedMessages: number;
   skippedMessages: number;
+  copiedEvents: number;
+  skippedEvents: number;
   copiedBytes: string;
   currentFolder: string | null;
   lastError: string | null;
@@ -32,13 +34,14 @@ interface Migracao {
 
 /** Servidores dos provedores que os clientes daqui realmente usam. */
 const PROVEDORES = [
-  { rotulo: "Zoho Mail", host: "imappro.zoho.com" },
+  { rotulo: "Zoho Mail", host: "imappro.zoho.com", caldav: "https://calendar.zoho.com/caldav" },
   { rotulo: "Titan (via Hostinger, HostGator)", host: "imap.titan.email" },
-  { rotulo: "Gmail / Google Workspace", host: "imap.gmail.com" },
+  { rotulo: "Gmail / Google Workspace", host: "imap.gmail.com", caldav: "https://apidata.googleusercontent.com/caldav/v2/" },
   { rotulo: "Outlook / Microsoft 365", host: "outlook.office365.com" },
   { rotulo: "Locaweb", host: "imap.locaweb.com.br" },
   { rotulo: "UOL Host", host: "imap.uhserver.com" },
-  { rotulo: "Outro (informar o servidor)", host: "" },
+  { rotulo: "iCloud", host: "imap.mail.me.com", caldav: "https://caldav.icloud.com/" },
+  { rotulo: "Outro (informar o servidor)", host: "", caldav: "" },
 ];
 
 function formatarBytes(valor: string): string {
@@ -59,12 +62,16 @@ export function MigracaoCaixa({ endereco }: { endereco: string }) {
   const [hostManual, setHostManual] = useState("");
   const [usuario, setUsuario] = useState(endereco);
   const [senha, setSenha] = useState("");
+  const [trazerAgenda, setTrazerAgenda] = useState(false);
+  const [caldavManual, setCaldavManual] = useState("");
 
   const [estado, setEstado] = useState<"parado" | "testando" | "enviando">("parado");
   const [sonda, setSonda] = useState<{ pastas: number; mensagens: number } | null>(null);
   const [erro, setErro] = useState<string | null>(null);
 
   const host = provedor || hostManual;
+  const caldavSugerido = PROVEDORES.find((item) => item.host === provedor)?.caldav ?? "";
+  const calendarUrl = caldavManual || caldavSugerido;
 
   const carregar = useCallback(async () => {
     try {
@@ -95,7 +102,7 @@ export function MigracaoCaixa({ endereco }: { endereco: string }) {
     try {
       const dados = await api<{ pastas: number; mensagens: number }>("/me/migracao/testar", {
         method: "POST",
-        body: JSON.stringify({ host, user: usuario, password: senha }),
+        body: JSON.stringify({ host, user: usuario, password: senha, ...(trazerAgenda && calendarUrl ? { calendarUrl, calendarUser: usuario, calendarPassword: senha } : {}) }),
       });
       setSonda(dados);
     } catch (falha) {
@@ -168,6 +175,7 @@ export function MigracaoCaixa({ endereco }: { endereco: string }) {
             {migracao.copiedMessages} de {migracao.totalMessages} mensagens
             {migracao.currentFolder ? ` · pasta ${migracao.currentFolder}` : ""}
             {Number(migracao.copiedBytes) > 0 ? ` · ${formatarBytes(migracao.copiedBytes)}` : ""}
+            {migracao.copiedEvents > 0 ? ` · ${migracao.copiedEvents} eventos` : ""}
           </p>
         </div>
 
@@ -194,6 +202,7 @@ export function MigracaoCaixa({ endereco }: { endereco: string }) {
           <p className="font-medium text-emerald-900">
             Migração concluída: {migracao.copiedMessages} mensagens trazidas de{" "}
             {migracao.sourceHost}.
+            {migracao.copiedEvents > 0 ? ` Também trouxemos ${migracao.copiedEvents} eventos.` : ""}
           </p>
           {migracao.skippedMessages > 0 && (
             <p className="mt-1 text-xs text-emerald-800">
@@ -242,6 +251,8 @@ export function MigracaoCaixa({ endereco }: { endereco: string }) {
           ))}
         </select>
       </div>
+
+      <div className="rounded-lg border border-[var(--color-borda)] p-3"><label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={trazerAgenda} onChange={(evento) => setTrazerAgenda(evento.target.checked)} />Trazer também a agenda</label>{trazerAgenda && host === "outlook.office365.com" ? <p className="mt-2 text-xs text-[var(--color-texto-fraco)]">O Microsoft 365 não oferece CalDAV. Exporte um arquivo .ics no Outlook e importe-o na seção Agenda desta página.</p> : trazerAgenda && <label className="mt-3 block text-sm font-medium">Endereço CalDAV<input type="url" value={calendarUrl} onChange={(evento) => setCaldavManual(evento.target.value)} placeholder="https://calendario.provedor.com/caldav" className={`${campo} mt-1`} /></label>}<p className="mt-2 text-xs text-[var(--color-texto-fraco)]">Google, Zoho e iCloud exigem senha de aplicativo. A credencial é apagada ao terminar.</p></div>
 
       {provedor === "" && (
         <div>

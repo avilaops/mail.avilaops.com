@@ -117,18 +117,46 @@ model Mailbox {
   rules            MailboxRule[]
   senderReputation MailSenderReputation[]
   davItems         MailDavItem[]
+  calendars        MailCalendar[]
   apiKeys          MailApiKey[]
   push             MailPushSubscription[]
+  calendarReminderDeliveries CalendarReminderDelivery[]
+  calendarInviteDeliveries   CalendarInviteDelivery[]
 
   /// Sequencias de sincronizacao DAV, uma por colecao. Cada mudanca bumpa a
   /// da colecao; o valor corrente e o ctag/sync-token que o cliente guarda.
-  davContactsSeq BigInt @default(0) @map("dav_contacts_seq")
-  davCalendarSeq BigInt @default(0) @map("dav_calendar_seq")
+  davContactsSeq    BigInt @default(0) @map("dav_contacts_seq")
+  davCalendarSeq    BigInt @default(0) @map("dav_calendar_seq")
+  /// Tokens anteriores a estes pisos perderam lapides e precisam refazer o sync inicial.
+  davContactsMinSeq BigInt @default(0) @map("dav_contacts_min_seq")
+  davCalendarMinSeq BigInt @default(0) @map("dav_calendar_min_seq")
 
   @@unique([domainId, localPart])
   @@index([status])
   @@index([ownerEmail])
   @@map("mail_mailboxes")
+}
+
+model MailCalendar {
+  id        String   @id @default(cuid())
+  mailboxId String   @map("mailbox_id")
+  href      String
+  name      String
+  color     String   @default("#2563EB")
+  position  Int      @default(0)
+  isDefault Boolean  @default(false) @map("is_default")
+  seq       BigInt   @default(0)
+  minSeq    BigInt   @default(0) @map("min_seq")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  mailbox Mailbox       @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  items   MailDavItem[]
+
+  @@unique([mailboxId, name])
+  @@unique([mailboxId, href])
+  @@index([mailboxId, position])
+  @@map("mail_calendars")
 }
 
 /// Regra de triagem do dono da caixa: "quando chegar mensagem assim, faca isto".
@@ -185,6 +213,56 @@ model MailPushSubscription {
   @@map("mail_push_subscriptions")
 }
 
+/// Registro idempotente dos lembretes da agenda enviados ao dono da caixa.
+model CalendarReminderDelivery {
+  id            String   @id @default(cuid())
+  mailboxId     String   @map("mailbox_id")
+  uid           String
+  href          String
+  title         String
+  occurrenceAt  DateTime @map("occurrence_at")
+  minutesBefore Int      @map("minutes_before")
+  status        String   @default("pending")
+  attempts      Int      @default(0)
+  nextAttemptAt DateTime @default(now()) @map("next_attempt_at")
+  lastAttemptAt DateTime? @map("last_attempt_at")
+  deliveredAt   DateTime? @map("delivered_at")
+
+  mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@unique([mailboxId, uid, occurrenceAt, minutesBefore])
+  @@index([status, nextAttemptAt])
+  @@index([mailboxId, deliveredAt])
+  @@map("mail_calendar_reminder_deliveries")
+}
+
+/// Outbox transacional de convites iTIP. A linha nasce na mesma transacao da
+/// mudanca CalDAV; falhas do SMTP nunca deixam a API fingir que a mutacao falhou.
+model CalendarInviteDelivery {
+  id             String   @id @default(cuid())
+  mailboxId      String   @map("mailbox_id")
+  dedupeKey      String   @unique @map("dedupe_key")
+  fromAddress    String   @map("from_address")
+  recipients     Json
+  subject        String
+  text           String   @db.Text
+  html           String   @db.Text
+  ical           String   @db.Text
+  method         String
+  status         String   @default("pending")
+  attempts       Int      @default(0)
+  nextAttemptAt  DateTime @default(now()) @map("next_attempt_at")
+  lastAttemptAt  DateTime? @map("last_attempt_at")
+  deliveredAt    DateTime? @map("delivered_at")
+  outboundId     String?  @map("outbound_id")
+
+  mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([mailboxId, deliveredAt])
+  @@map("mail_calendar_invite_deliveries")
+}
+
 /// Chave de API criada pelo dono na area de desenvolvedor do webmail.
 ///
 /// Guarda so o hash: o valor em claro aparece UMA vez, na criacao. Escopo
@@ -194,7 +272,7 @@ model MailPushSubscription {
 model MailApiKey {
   id        String @id @default(cuid())
   mailboxId String @map("mailbox_id")
-  /// mailbox | provisioning
+  /// mailbox | provisioning | agenda:ler | agenda:escrever
   scope     String @default("mailbox")
   name      String
   /// Inicio do token (ate o segundo "_" + 6 chars), para reconhecer na lista.
@@ -263,6 +341,7 @@ model LoginAttempt {
 model MailDavItem {
   id         String @id @default(cuid())
   mailboxId  String @map("mailbox_id")
+  calendarId String? @map("calendar_id")
   /// contacts | calendar
   collection String
   /// Nome do recurso na URL (ex.: `ab12.vcf`), escolhido pelo cliente no PUT.
@@ -287,9 +366,11 @@ model MailDavItem {
   updatedAt DateTime  @updatedAt @map("updated_at")
 
   mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  calendar MailCalendar? @relation(fields: [calendarId], references: [id], onDelete: Cascade)
 
-  @@unique([mailboxId, collection, href])
+  @@index([mailboxId, collection, href])
   @@index([mailboxId, collection, seq])
+  @@index([calendarId, seq])
   @@map("mail_dav_items")
 }
 
@@ -408,9 +489,9 @@ model Message {
   /// outra pasta gera um UID novo la, como o protocolo exige.
   uid Int @default(0)
 
-  receivedAt DateTime @default(now()) @map("received_at")
+  receivedAt DateTime  @default(now()) @map("received_at")
   /// Inicio da permanencia na lixeira, independente da data de recebimento.
-  trashedAt DateTime? @map("trashed_at")
+  trashedAt  DateTime? @map("trashed_at")
 
   /// Quando a mensagem adiada volta para a Entrada. Nulo quando nao esta
   /// adiada. O varredor do MTA usa este campo como agenda, do mesmo jeito que
@@ -459,6 +540,8 @@ model OutboundMessage {
   /// Lista de destinatarios do envelope (RCPT TO).
   recipients   Json
   subject      String?
+  /// Chave do produtor para tornar enfileiramento repetido idempotente.
+  sourceKey    String? @unique @map("source_key")
 
   /// .eml.gz ja assinado com DKIM.
   storageKey String @map("storage_key")
@@ -512,6 +595,9 @@ model MailMigration {
   /// guardar para sempre seria guardar sem motivo, ja que so serve durante a
   /// copia.
   sourceSecret String? @map("source_secret") @db.Text
+  sourceCalendarUrl    String? @map("source_calendar_url")
+  sourceCalendarUser   String? @map("source_calendar_user")
+  sourceCalendarSecret String? @map("source_calendar_secret") @db.Text
 
   /// pendente | copiando | concluida | falhou | cancelada
   status String @default("pendente")
@@ -521,6 +607,8 @@ model MailMigration {
   copiedMessages  Int    @default(0) @map("copied_messages")
   skippedMessages Int    @default(0) @map("skipped_messages")
   copiedBytes     BigInt @default(0) @map("copied_bytes")
+  copiedEvents    Int    @default(0) @map("copied_events")
+  skippedEvents   Int    @default(0) @map("skipped_events")
 
   /// Pasta que esta sendo copiada agora — vira texto na tela ("Enviados").
   currentFolder String? @map("current_folder")
@@ -588,6 +676,14 @@ model MailboxSettings {
   /// Padrao false: imagem remota e o rastreador de leitura mais comum.
   showRemoteImages Boolean @default(false) @map("show_remote_images")
   messagesPerPage  Int     @default(30) @map("messages_per_page")
+
+  calendarTimezone              String @default("America/Sao_Paulo") @map("calendar_timezone")
+  calendarWeekStart             Int    @default(0) @map("calendar_week_start")
+  calendarBusinessHoursStart    String @default("09:00") @map("calendar_business_hours_start")
+  calendarBusinessHoursEnd      String @default("18:00") @map("calendar_business_hours_end")
+  calendarDefaultView           String @default("week") @map("calendar_default_view")
+  calendarDefaultReminder       Int    @default(10) @map("calendar_default_reminder")
+  calendarDefaultAllDayReminder Int    @default(1440) @map("calendar_default_all_day_reminder")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
