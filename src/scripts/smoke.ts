@@ -954,7 +954,7 @@ console.log("\n[higiene] Codigo-fonte sem bytes de controle");
    * Erro que compila, passa no teste e so aparece em producao merece um teste
    * proprio. Editor nenhum mostra esses bytes.
    */
-  const { readdirSync, readFileSync: lerCru } = await import("node:fs");
+  const { existsSync, readdirSync, readFileSync: lerCru } = await import("node:fs");
   const { join: juntar } = await import("node:path");
 
   const PROIBIDOS = /[\x00-\x08\x0b\x0c\x0e-\x1f]/;
@@ -967,12 +967,16 @@ console.log("\n[higiene] Codigo-fonte sem bytes de controle");
     });
   }
 
-  const sujos = varrer("src").filter((arquivo) => PROIBIDOS.test(lerCru(arquivo, "latin1")));
-  check(
-    "nenhum arquivo .ts carrega byte de controle",
-    sujos.length === 0,
-    sujos.join(", "),
-  );
+  if (existsSync("src")) {
+    const sujos = varrer("src").filter((arquivo) => PROIBIDOS.test(lerCru(arquivo, "latin1")));
+    check(
+      "nenhum arquivo .ts carrega byte de controle",
+      sujos.length === 0,
+      sujos.join(", "),
+    );
+  } else {
+    console.log("  skip codigo-fonte ausente no artefato de producao");
+  }
 }
 
 console.log("\n[higiene+1] Casamento de regras de triagem");

@@ -20,7 +20,7 @@ Este checklist operacional cobre a AVL-61. Nenhuma etapa de produção deve ser 
 - [ ] Subir API e webmail construídos pelo mesmo workflow.
 - [ ] Confirmar API, MTA, webmail e Caddy ativos.
 - [ ] Conferir que `/api/v1/*` chega à API, `/api/mail/*` ao BFF e `/dav/*` à API.
-- [ ] Executar `npm run test:smoke` no artefato da API em produção.
+- [ ] Executar `npm run test:smoke:production` no artefato da API em produção.
 - [ ] Abrir `/agenda` numa caixa `@avilaops.com` e confirmar criação, edição, exclusão, lembrete e sincronização CalDAV.
 - [ ] Conferir os logs sem erro novo:
 
