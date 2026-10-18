@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start -p 3041",
     "lint": "eslint",
-    "test:calendar": "npm run test:calendar-security && npm run test:calendar-date && npm run test:calendar-layout && npm run test:calendar-list && npm run test:calendar-editor && npm run test:calendar-detail && npm run test:calendar-drag && npm run test:calendar-recurrence && npm run test:calendar-search && npm run test:calendar-timezone && npm run test:calendar-integrations",
+    "test:calendar": "npm run test:calendar-security && npm run test:calendar-date && npm run test:calendar-layout && npm run test:calendar-list && npm run test:calendar-editor && npm run test:calendar-detail && npm run test:calendar-drag && npm run test:calendar-recurrence && npm run test:calendar-search && npm run test:calendar-timezone && npm run test:calendar-integrations && npm run test:calendar-mobile",
     "test:calendar-security": "tsx --tsconfig tsconfig.json src/scripts/teste-agenda-seguranca.tsx",
     "test:calendar-date": "tsx --tsconfig tsconfig.json src/scripts/teste-data-agenda.ts",
     "test:calendar-layout": "tsx --tsconfig tsconfig.json src/scripts/teste-layout-agenda.ts",
@@ -20,6 +20,7 @@
     "test:calendar-search": "tsx --tsconfig tsconfig.json src/scripts/teste-busca-agenda.ts",
     "test:calendar-timezone": "tsx --tsconfig tsconfig.json src/scripts/teste-fuso-agenda.ts",
     "test:calendar-integrations": "tsx --tsconfig tsconfig.json src/scripts/teste-integracoes-agenda.ts",
+    "test:calendar-mobile": "tsx --tsconfig tsconfig.json src/scripts/teste-experiencia-mobile-agenda.tsx",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

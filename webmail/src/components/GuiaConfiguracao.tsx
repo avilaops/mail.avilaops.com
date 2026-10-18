@@ -74,15 +74,34 @@ export function GuiaConfiguracao({ host }: Props) {
   return (
     <main className="min-h-full bg-[var(--color-fundo-suave)] px-6 py-12">
       <div className="mx-auto w-full max-w-2xl">
-        <h1 className="text-2xl font-semibold tracking-tight">Configurar seu e-mail</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Configurar no seu aparelho</h1>
         <p className="mt-1 text-sm text-[var(--color-texto-fraco)]">
-          No celular, no Outlook, no Gmail ou em qualquer programa. Os dados são os mesmos para
-          todas as caixas da Ávila Ops.
+          Sincronize agenda e e-mail no celular, computador ou aplicativo que você já usa.
         </p>
+
+        <section id="agenda" className="scroll-mt-4 mt-8 rounded-2xl border border-[var(--color-borda)] bg-[var(--color-superficie)] p-5 shadow-sm">
+          <div className="flex items-start gap-3">
+            <span aria-hidden="true" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-blue-50 text-xl text-blue-700 dark:bg-blue-950 dark:text-blue-200">▦</span>
+            <div>
+              <h2 className="text-lg font-semibold">Sincronizar sua agenda</h2>
+              <p className="mt-1 text-sm text-[var(--color-texto-fraco)]">Os eventos do Ávila Mail aparecem no calendário do celular e do computador usando CalDAV.</p>
+            </div>
+          </div>
+          <dl className="mt-5 space-y-3 rounded-xl bg-[var(--color-fundo-suave)] p-4 text-sm">
+            <div><dt className="text-xs text-[var(--color-texto-fraco)]">Endereço CalDAV</dt><dd className="mt-1 flex min-w-0 items-start"><code className="min-w-0 flex-1 break-all font-mono">https://{host}/dav/</code><Copiar texto={`https://${host}/dav/`} /></dd></div>
+            <div><dt className="text-xs text-[var(--color-texto-fraco)]">Usuário</dt><dd className="font-medium">seu endereço de e-mail completo</dd></div>
+            <div><dt className="text-xs text-[var(--color-texto-fraco)]">Senha</dt><dd className="font-medium">a senha da caixa</dd></div>
+          </dl>
+          <div className="mt-4 space-y-2">
+            <Passos titulo="iPhone e iPad" passos={["Ajustes → Apps → Calendário → Contas de Calendário → Adicionar Conta.", "Escolha Outra → Adicionar Conta CalDAV.", `Servidor: ${host}. Usuário: seu endereço completo. Senha: a senha da caixa.`, "Salve a conta e abra o app Calendário para concluir a primeira sincronização."]} />
+            <Passos titulo="Android" passos={["Instale um aplicativo compatível com CalDAV, como DAVx⁵.", `Adicione uma conta por URL e use https://${host}/dav/.`, "Entre com o endereço completo e a senha da caixa.", "Escolha as agendas que devem aparecer no aplicativo de calendário."]} />
+            <Passos titulo="macOS e outros computadores" passos={["Abra as configurações de contas do aplicativo de calendário.", "Escolha adicionar uma conta CalDAV manualmente.", `Servidor: https://${host}/dav/. Usuário: seu endereço completo.`, "Entre com a senha da caixa e selecione as agendas que deseja sincronizar."]} />
+          </div>
+        </section>
 
         {/* ------ Servidores ------ */}
         <section className="mt-8 rounded-xl border border-[var(--color-borda)] bg-[var(--color-superficie)] p-5">
-          <h2 className="text-base font-semibold">Servidores e portas</h2>
+          <h2 className="text-base font-semibold">Servidores e portas do e-mail</h2>
           <p className="mt-1 text-sm text-[var(--color-texto-fraco)]">
             Servidor de entrada e de saída:{" "}
             <code className="rounded bg-black/5 px-1.5 py-0.5 font-mono text-sm dark:bg-white/10">{host}</code>
