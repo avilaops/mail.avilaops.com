@@ -18,6 +18,8 @@ import { dataCivil, intervaloDaVisao, lerDataCivil, lerVisaoAgenda, navegarData,
 import { useAtalhos, type Atalho } from "@/lib/atalhos";
 import type { AgendaCalendario, EventoAgenda, PreferenciasAgenda } from "@/lib/tipos";
 import { intervaloCivilNoFuso } from "@/lib/fusoAgenda";
+import { classeConteudoAgenda, deveMostrarGradeAgenda, rotuloCompactoAgenda } from "@/lib/apresentacaoAgenda";
+import { NavegacaoVisoesAgenda } from "@/components/NavegacaoVisoesAgenda";
 
 const VISAO_DA_API: Record<PreferenciasAgenda["defaultView"], VisaoAgenda> = { day: "dia", week: "semana", month: "mes", list: "lista" };
 
@@ -299,37 +301,38 @@ export function PainelAgenda() {
       <NavegacaoProduto />
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <LateralAgenda aberta={lateralAberta} data={data} visao={visao} primeiroDia={preferencias?.weekStart} somenteLeitura={!online} agendas={agendas} visiveis={agendasVisiveis} onVisibilidade={(id, visivel) => setAgendasVisiveis((atuais) => { const proximas = new Set(atuais); if (visivel) proximas.add(id); else proximas.delete(id); return proximas; })} onCriarAgenda={() => void novaAgenda().catch((falha) => setErro(falha instanceof Error ? falha.message : "Não foi possível criar a agenda."))} onEditarAgenda={(agenda) => void editarAgenda(agenda).catch((falha) => setErro(falha instanceof Error ? falha.message : "Não foi possível editar a agenda."))} onExcluirAgenda={(agenda) => void removerAgenda(agenda).catch((falha) => setErro(falha instanceof Error ? falha.message : "Não foi possível excluir a agenda."))} onCriar={abrirCriacaoPadrao} onData={(dia) => atualizarUrl(dia, visao)} onVisao={(item) => atualizarUrl(data, item)} onFechar={() => setLateralAberta(false)} />
-        <main className={`min-h-0 min-w-0 flex-1 ${(visao === "dia" || visao === "semana" || visao === "mes") ? "overflow-hidden" : "rolagem-fina overflow-y-auto"}`}>
-          <div className="sticky top-0 z-20 flex min-h-16 items-center gap-2 border-b border-[var(--color-borda)] bg-[var(--color-fundo)]/95 px-3 backdrop-blur sm:px-5">
-            <button onClick={() => setLateralAberta(true)} aria-label="Abrir navegação da agenda" className="rounded-md p-2 hover:bg-[var(--color-fundo-suave)] md:hidden">☰</button>
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="sticky top-0 z-20 flex min-h-14 items-center gap-1 border-b border-[var(--color-borda)] bg-[var(--color-fundo)]/95 px-2 backdrop-blur sm:min-h-16 sm:gap-2 sm:px-5">
+            <button onClick={() => setLateralAberta(true)} aria-label="Abrir navegação da agenda" className="grid min-h-11 min-w-11 place-items-center rounded-lg hover:bg-[var(--color-fundo-suave)] md:hidden">☰</button>
             <button onClick={() => atualizarUrl(new Date(), visao)} className="rounded-md border border-[var(--color-borda)] px-3 py-1.5 text-sm font-medium hover:bg-[var(--color-fundo-suave)]">Hoje</button>
             <div className="flex">
               <button onClick={() => atualizarUrl(navegarData(data, visao, -1), visao)} aria-label="Período anterior" className="rounded-l-md p-2 hover:bg-[var(--color-fundo-suave)]">←</button>
               <button onClick={() => atualizarUrl(navegarData(data, visao, 1), visao)} aria-label="Próximo período" className="rounded-r-md p-2 hover:bg-[var(--color-fundo-suave)]">→</button>
             </div>
-            <h1 className="min-w-0 truncate text-sm font-semibold capitalize sm:text-base">
-              {rotuloDoIntervalo(data, visao, preferencias?.weekStart)}
+            <h1 className="min-w-0 flex-1 truncate text-center text-sm font-semibold capitalize sm:text-left sm:text-base">
+              <span className="sm:hidden">{rotuloCompactoAgenda(data, visao, preferencias?.weekStart)}</span>
+              <span className="hidden sm:inline">{rotuloDoIntervalo(data, visao, preferencias?.weekStart)}</span>
             </h1>
-            <button onClick={() => setBuscaAberta(true)} aria-label="Buscar na agenda" className="ml-auto rounded-md p-2 hover:bg-[var(--color-fundo-suave)]">⌕</button>
-            <button disabled={!online} onClick={abrirCriacaoPadrao} className="rounded-md bg-[var(--color-forte)] px-3 py-1.5 text-sm font-medium text-[var(--color-sobre-forte)] disabled:opacity-50 md:hidden">Criar</button>
+            <button onClick={() => setBuscaAberta(true)} aria-label="Buscar na agenda" className="grid min-h-11 min-w-11 place-items-center rounded-lg hover:bg-[var(--color-fundo-suave)]">⌕</button>
           </div>
+          <NavegacaoVisoesAgenda visao={visao} onMudar={(item) => atualizarUrl(data, item)} />
 
           {!online && <div role="status" className="border-b border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-950">Sem conexão. A agenda está disponível somente para leitura.</div>}
           {lembreteNaAba && <div role="status" className="flex items-center gap-3 border-b border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-950"><a href={lembreteNaAba.url} className="min-w-0 flex-1 font-medium underline">{lembreteNaAba.texto}</a><button type="button" aria-label="Fechar lembrete" onClick={() => setLembreteNaAba(null)}>×</button></div>}
-          {primeiraVisita && <div className="flex items-center gap-3 border-b border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-950"><span className="min-w-0 flex-1">Sua agenda já sincroniza com celular e computador. <a href="/configurar" className="font-medium underline">Configurar CalDAV</a></span><button aria-label="Fechar aviso" onClick={() => { localStorage.setItem("avila_agenda_visitada", "1"); setPrimeiraVisita(false); }}>×</button></div>}
+          {primeiraVisita && <div className="flex items-center gap-3 border-b border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-950"><span className="min-w-0 flex-1">Leve seus eventos para o calendário do celular. <a href="/configurar#agenda" className="font-medium underline">Configurar agenda</a></span><button aria-label="Fechar aviso" onClick={() => { localStorage.setItem("avila_agenda_visitada", "1"); setPrimeiraVisita(false); }}>×</button></div>}
           {carregando && eventos.length > 0 && <div role="status" className="h-0 overflow-visible"><div className="h-0.5 animate-pulse bg-[var(--color-realce)]" /></div>}
 
-          {(visao === "dia" || visao === "semana") && eventosVisiveis.length > 0 && !erro ? (
-            <div className="h-[calc(100%-4rem)]">
+          {(visao === "dia" || visao === "semana") && deveMostrarGradeAgenda(visao, Boolean(erro)) && (!carregando || eventos.length > 0) ? (
+            <div className={classeConteudoAgenda(visao)}>
               <VisaoSemana data={data} dias={visao === "dia" ? 1 : 7} eventos={eventosVisiveis} primeiroDia={preferencias?.weekStart} expedienteInicio={preferencias?.businessHoursStart} expedienteFim={preferencias?.businessHoursEnd} fuso={preferencias?.timezone} lembretePadrao={preferencias?.defaultReminder} lembreteDiaInteiroPadrao={preferencias?.defaultAllDayReminder} somenteLeitura={!online} onAlterar={solicitarAlteracaoHorario} onMaisOpcoes={(inicio, fim, titulo) => { setInicioCriacao(inicio); setRascunhoCriacao({ fim, titulo }); setEventoEditando(null); setEditorAberto(true); }} onCriado={(evento) => setEventos((atuais) => [...atuais, evento])} onEvento={setEventoAberto} />
             </div>
-          ) : visao === "mes" && eventosVisiveis.length > 0 && !erro ? (
-            <div className="h-[calc(100%-4rem)]">
+          ) : visao === "mes" && deveMostrarGradeAgenda(visao, Boolean(erro)) && (!carregando || eventos.length > 0) ? (
+            <div className={classeConteudoAgenda(visao)}>
               <VisaoMes data={data} eventos={eventosVisiveis} primeiroDia={preferencias?.weekStart} fuso={preferencias?.timezone} lembretePadrao={preferencias?.defaultReminder} lembreteDiaInteiroPadrao={preferencias?.defaultAllDayReminder} somenteLeitura={!online} onAlterar={solicitarAlteracaoHorario} onDia={(dia) => atualizarUrl(dia, "dia")} onEvento={setEventoAberto} onCriado={(evento) => setEventos((atuais) => [...atuais, evento])} onMaisOpcoes={(inicio, fim, titulo, diaInteiro) => { setInicioCriacao(inicio); setRascunhoCriacao({ fim, titulo, diaInteiro }); setEventoEditando(null); setEditorAberto(true); }} />
             </div>
-          ) : visao === "lista" && eventosVisiveis.length > 0 && !erro ? (
-            <VisaoLista inicio={janela.inicio} eventos={eventosVisiveis} fuso={preferencias?.timezone} onEvento={setEventoAberto} />
-          ) : <div className="mx-auto w-full max-w-5xl px-4 py-8 sm:px-8 sm:py-10">
+          ) : visao === "lista" && !erro && (!carregando || eventos.length > 0) ? (
+            <div className={`${classeConteudoAgenda(visao)} pb-20 md:pb-0`}><VisaoLista inicio={janela.inicio} eventos={eventosVisiveis} fuso={preferencias?.timezone} onEvento={setEventoAberto} /></div>
+          ) : <div className={`${classeConteudoAgenda(visao)} mx-auto w-full max-w-5xl px-4 py-8 pb-24 sm:px-8 sm:py-10 md:pb-10`}>
 
           {erro ? <div role="alert" className="mb-6 border-l-2 border-[var(--color-perigo)] bg-[var(--color-fundo-suave)] px-4 py-3 text-sm"><p>{erro}</p><button onClick={() => void carregar()} className="mt-2 font-medium text-[var(--color-realce)] underline">Tentar de novo</button></div> : carregando ? (
             <div aria-label="Carregando agenda" className="animate-pulse space-y-3"><div className="h-8 w-48 rounded bg-[var(--color-fundo-suave)]" /><div className="h-64 rounded-xl bg-[var(--color-fundo-suave)]" /></div>
@@ -349,6 +352,7 @@ export function PainelAgenda() {
           </div>}
         </main>
       </div>
+      <button type="button" disabled={!online} onClick={abrirCriacaoPadrao} aria-label="Criar evento" className="fixed right-4 z-30 grid h-14 w-14 place-items-center rounded-full bg-[var(--color-forte)] text-3xl font-light text-[var(--color-sobre-forte)] shadow-xl transition-transform hover:scale-105 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-realce)] disabled:opacity-50 md:hidden" style={{ bottom: "calc(1rem + env(safe-area-inset-bottom, 0px))" }}>+</button>
       {editorAberto && <EditorEvento agendas={agendas} key={eventoEditando ? `${eventoEditando.id}:${eventoEditando.recorrenciaId ?? "all"}` : `novo:${inicioCriacao?.toISOString()}`} data={inicioCriacao ?? data} fimInicial={rascunhoCriacao?.fim} tituloInicial={rascunhoCriacao?.titulo} descricaoInicial={rascunhoCriacao?.descricao} convidadosSugeridos={rascunhoCriacao?.convidadosSugeridos} diaInteiroInicial={rascunhoCriacao?.diaInteiro} evento={eventoEditando ?? undefined} escopo={escopoEditor} fusoPadrao={preferencias?.timezone} lembretePadrao={preferencias?.defaultReminder} lembreteDiaInteiroPadrao={preferencias?.defaultAllDayReminder} conflitoExterno={conflitoExterno} onConflitoResolvido={() => setConflitoExterno(false)} onFechar={() => { setEditorAberto(false); setEventoEditando(null); setEscopoEditor(undefined); setRascunhoCriacao(null); setConflitoExterno(false); }} onSalvar={() => { setEditorAberto(false); setEventoEditando(null); setEscopoEditor(undefined); setRascunhoCriacao(null); setConflitoExterno(false); void carregar(); }} />}
       {eventoAberto && <DetalheEvento evento={eventoAberto} fuso={preferencias?.timezone} somenteLeitura={!online} onFechar={() => setEventoAberto(null)} onEditar={() => pedirEscopo(eventoAberto, "editar", (escopo) => abrirEdicao(eventoAberto, escopo))} onDuplicar={() => { const origem = eventoAberto; void criarEventoAgenda({ titulo: `${origem.titulo} (cópia)`, inicio: origem.inicio, fim: origem.fim, diaInteiro: origem.diaInteiro, fuso: origem.fuso, local: origem.local, descricao: origem.descricao, recorrencia: origem.recorrencia, lembretes: origem.lembretes, convidados: origem.convidados, disponibilidade: origem.disponibilidade }).then((copia) => { setEventos((atuais) => [...atuais, copia]); setEventoAberto(copia); }).catch((falha) => setErro(falha instanceof Error ? falha.message : "Não foi possível duplicar o evento.")); }} onExcluir={() => pedirEscopo(eventoAberto, "excluir", (escopo) => excluirSelecionado(eventoAberto, escopo))} />}
       <div className="fixed bottom-5 left-1/2 z-[60] flex -translate-x-1/2 flex-col gap-2">{exclusoesPendentes.map((pendente) => <div key={pendente.evento.id} role="status" className="flex items-center gap-4 rounded-lg bg-[var(--color-forte)] px-4 py-3 text-sm text-[var(--color-sobre-forte)] shadow-xl"><span>“{pendente.evento.titulo}” excluído</span><button type="button" onClick={() => { window.clearTimeout(pendente.timer); setEventos((atuais) => [...atuais, pendente.evento]); setExclusoesPendentes((atuais) => atuais.filter((item) => item.evento.id !== pendente.evento.id)); }} className="font-semibold underline">Desfazer</button></div>)}</div>
