@@ -219,7 +219,7 @@ Autenticação: `Authorization: Bearer <MAIL_API_TOKEN>`.
 | POST | `/v1/public/signup/dns` | **Público**: `{domain}` → os 4 registros de DNS que o domínio precisa |
 | POST | `/v1/public/signup/verify` | **Público**: `{domain}` → `{pronto, checks, faltando}` |
 | POST | `/v1/webhooks/mercadopago` | Notificações do MP (valida `x-signature`) |
-| GET | `/v1/ops/status` | Fila, domínios pendentes, quota, para o n8n |
+| GET | `/v1/ops/status` | Fila, domínios pendentes, quota e rollout da agenda, para o n8n |
 | GET | `/v1/ops/domains-pending` | Domínios aguardando propagação de DNS |
 
 ### Área administrativa (webmail `/admin`)
@@ -475,6 +475,10 @@ Três decisões que valem registro:
 `GET /v1/ops/status` devolve `warmup: { dia, cap, enviadosHoje, restante }`
 enquanto a rampa está ativa (null quando desligada ou concluída), e cada ciclo
 que segura mensagens grava um evento `outbound.warmup_deferred`.
+
+Se existir um evento `calendar.internal_validation.started`, o mesmo endpoint
+devolve `calendarRollout` com a janela de observação e contagens de eventos,
+lembretes, convites e erros da caixa validada. Sem registro, o campo vale null.
 
 Se o IP entrar em bloqueio de reputação, a volta para uma ponte é trocar
 `MAIL_RELAY_DRIVER` no `.env.production` (`smtp` ou `n8n`) e reiniciar o MTA.

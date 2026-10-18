@@ -4214,6 +4214,46 @@ console.log("\n[49] Autoatendimento: pagar, receber a caixa e criar a senha");
   globalThis.fetch = fetchOriginal;
 }
 
+console.log("\n[50] Estado operacional da validacao interna da agenda");
+const { estadoDaValidacaoInternaDaAgenda } = await import("../services/calendar-rollout.js");
+const caixaValidacaoAgenda = await createMailbox({
+  domain: "brilhax.com.br",
+  username: "validacao-agenda",
+  password: SENHA,
+  mustChangePassword: false,
+});
+const inicioValidacaoAgenda = new Date("2026-10-18T12:00:00.000Z");
+const fimValidacaoAgenda = new Date("2026-10-25T12:00:00.000Z");
+await prisma.mailEvent.create({
+  data: {
+    mailboxId: caixaValidacaoAgenda.id,
+    type: "calendar.internal_validation.started",
+    payload: {
+      startedAt: inicioValidacaoAgenda.toISOString(),
+      endsAt: fimValidacaoAgenda.toISOString(),
+      checks: ["create", "update", "delete", "caldav", "reminder"],
+    },
+  },
+});
+await prisma.calendarReminderDelivery.create({
+  data: {
+    mailboxId: caixaValidacaoAgenda.id,
+    uid: "validacao-agenda-reminder",
+    href: "validacao-agenda-reminder.ics",
+    title: "Validacao interna",
+    occurrenceAt: new Date("2026-10-19T15:00:00.000Z"),
+    minutesBefore: 10,
+    status: "sent",
+    attempts: 1,
+    deliveredAt: new Date("2026-10-19T14:50:00.000Z"),
+  },
+});
+const estadoValidacaoAgenda = await estadoDaValidacaoInternaDaAgenda(new Date("2026-10-20T12:00:00.000Z"));
+check("localiza a validacao interna mais recente", estadoValidacaoAgenda?.mailbox === "validacao-agenda@brilhax.com.br");
+check("calcula a janela de observacao", estadoValidacaoAgenda?.startedAt === inicioValidacaoAgenda.toISOString() && estadoValidacaoAgenda.endsAt === fimValidacaoAgenda.toISOString());
+check("agrega lembretes da caixa observada", estadoValidacaoAgenda?.reminders.sent === 1);
+check("informa que a janela ainda esta em andamento", estadoValidacaoAgenda?.observationComplete === false);
+
 await prisma.$disconnect();
 rmSync(workDir, { recursive: true, force: true });
 

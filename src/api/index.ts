@@ -21,6 +21,7 @@ import { iniciarFilaConvitesAgenda } from "../services/calendar-outbound.js";
 import { ApiKeyError, autenticarChave, escopoDoToken } from "../services/apiKeys.js";
 import { MercadoPagoError, assinaturaValida } from "../lib/mercadopago.js";
 import { orcamentoDeHoje } from "../mta/warmup.js";
+import { estadoDaValidacaoInternaDaAgenda } from "../services/calendar-rollout.js";
 import { handleDav } from "../dav/server.js";
 import {
   BillingError,
@@ -446,7 +447,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   }
 
   if (path === "/v1/ops/status" && method === "GET") {
-    const [queued, deferred, failed, domainsPending, quotaAlerts, warmup] = await Promise.all([
+    const [queued, deferred, failed, domainsPending, quotaAlerts, warmup, calendarRollout] = await Promise.all([
       prisma.outboundMessage.count({ where: { status: "queued" } }),
       prisma.outboundMessage.count({ where: { status: "deferred" } }),
       prisma.outboundMessage.count({ where: { status: "failed", createdAt: { gte: new Date(Date.now() - 86_400_000) } } }),
@@ -455,6 +456,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         SELECT COUNT(*)::bigint AS count FROM mail_mailboxes WHERE used_bytes > quota_bytes * 0.9
       `,
       orcamentoDeHoje(),
+      estadoDaValidacaoInternaDaAgenda(),
     ]);
 
     return json(res, 200, {
@@ -464,6 +466,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       relayDriver: config.relay.driver,
       // Null quando o aquecimento esta desligado ou a rampa ja terminou.
       warmup,
+      calendarRollout,
     });
   }
 
