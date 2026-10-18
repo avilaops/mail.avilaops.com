@@ -46,7 +46,7 @@ Documento de produto (arquitetura, custos, margem, fases):
 | Autoatendimento (domínio, DNS, caixa) | `src/services/publicSignup.ts` + `src/services/signupCheckout.ts` | Pronto |
 | Página inicial pública (a porta de quem ainda não é cliente) | `webmail/src/components/PaginaInicial.tsx` | Pronto |
 
-A liberação da agenda usa `AGENDA_ENABLED=false|internal|all`. Em `internal`, somente os domínios de `AGENDA_INTERNAL_DOMAINS` veem e abrem a agenda. O guia de celular está em `docs/agenda-configuracao-celular.md` e o aviso aos clientes permanece como rascunho em `docs/agenda-aviso-clientes.md` até aprovação.
+A liberação da agenda usa `AGENDA_ENABLED=false|internal|all`. Desde 18/10/2026, produção usa `all`, disponibilizando a agenda para todas as caixas autenticadas. Em `internal`, somente os domínios de `AGENDA_INTERNAL_DOMAINS` veem e abrem a agenda. O guia de celular está em `docs/agenda-configuracao-celular.md` e o aviso aos clientes permanece como rascunho em `docs/agenda-aviso-clientes.md` até aprovação específica.
 
 ## Login pelo SSO (auth.avilaops.com)
 
