@@ -72,11 +72,11 @@ Caddy: so `/api/v1/*` vai para a API; o resto de `/api/*` e BFF do webmail.
 npm test                  # sobe Postgres em container, migra e roda tudo
 npm run test:smoke        # 251 verificações, sem banco e sem rede
 npm run test:security     # 46 verificações de injeção, XSS e token
-npm run test:integration  # 400 verificações contra Postgres real
+npm run test:integration  # exige MAIL_DATABASE_URL; prefira npm test no uso local
 npm --prefix webmail run test:calendar-integrations # integrações mensagem/.ics
 ```
 
-**Servidor: 697 verificações. Interface da agenda: 87 verificações.** Os protocolos são conferidos por clientes
+**Servidor: 701 verificações de integração e 251 de smoke. Interface da agenda: 87 verificações.** Os protocolos são conferidos por clientes
 independentes: IMAP pelo `imapflow`, CardDAV/CalDAV pelo `tsdav`. A sondagem de segurança cobre 23 vetores de XSS,
 injeção de cabeçalho CRLF (assunto e nome de exibição), endereços malformados e
 8 formas de falsificar o token de sessão.
