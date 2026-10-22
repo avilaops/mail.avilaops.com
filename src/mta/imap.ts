@@ -1207,7 +1207,8 @@ async function tratar(
     const itens = corte === -1 ? "" : args.slice(corte + 1);
 
     const ids = expandirIntervalo(spec, sessao, porUid);
-    const pedeEstrutura = itens.toUpperCase().includes("BODYSTRUCTURE");
+    const pedidoMaiusculo = itens.toUpperCase();
+    const pedeCorpo = pedidoMaiusculo.includes("BODYSTRUCTURE") || /BODY(?:\.PEEK)?\[/.test(pedidoMaiusculo);
 
     // Uma caixa real pode ter gigabytes. Buscar todas as linhas de uma vez
     // mantinha corpos HTML/texto de toda a pasta no heap ate o fim do comando.
@@ -1238,8 +1239,8 @@ async function tratar(
           storageKey: true,
           // BODYSTRUCTURE e secoes numeradas usam estes campos. Consultas de
           // FLAGS/ENVELOPE nao carregam os corpos grandes da pasta inteira.
-          bodyText: pedeEstrutura ? true : undefined,
-          bodyHtml: pedeEstrutura ? true : undefined,
+          bodyText: pedeCorpo ? true : undefined,
+          bodyHtml: pedeCorpo ? true : undefined,
         },
       });
 
