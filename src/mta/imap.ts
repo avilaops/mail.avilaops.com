@@ -55,6 +55,8 @@ interface Sessao {
 const LIMITE_LITERAL_ANONIMO = 8 * 1024;
 /** Teto de uma mensagem enviada por APPEND. Acima disso a conexao cai. */
 const LIMITE_LITERAL = 40 * 1024 * 1024;
+/** Mensagens carregadas do banco por vez durante uma sincronizacao IMAP. */
+const LOTE_FETCH = 50;
 
 async function pedirContinuacao(socket: Socket, sessao: Sessao): Promise<string | null> {
   if (!sessao.aguardarLinha) return null;
@@ -696,6 +698,47 @@ function responder(socket: Socket, linha: string | Buffer): void {
 }
 
 /**
+ * Envia uma resposta potencialmente grande sem deixar o buffer de escrita do
+ * socket crescer sem limite.
+ *
+ * Clientes em primeira sincronizacao podem pedir o corpo de uma pasta inteira.
+ * `socket.write()` aceita os buffers mesmo quando a rede ja nao consegue
+ * escoa-los; ignorar o retorno `false` conserva cada mensagem na memoria e uma
+ * caixa de centenas de megabytes derruba o MTA inteiro. O `drain` limita essa
+ * fila ao highWaterMark do socket.
+ */
+export async function responderComContrapressao(socket: Socket, linha: Buffer): Promise<void> {
+  if (socket.destroyed) throw new Error("conexao IMAP encerrada durante FETCH");
+
+  const podeContinuar = socket.write(Buffer.concat([linha, Buffer.from("\r\n")]));
+  if (podeContinuar) return;
+
+  await new Promise<void>((resolve, reject) => {
+    const limpar = () => {
+      socket.off("drain", drenou);
+      socket.off("close", fechou);
+      socket.off("error", falhou);
+    };
+    const drenou = () => {
+      limpar();
+      resolve();
+    };
+    const fechou = () => {
+      limpar();
+      reject(new Error("conexao IMAP encerrada durante FETCH"));
+    };
+    const falhou = (error: Error) => {
+      limpar();
+      reject(error);
+    };
+
+    socket.once("drain", drenou);
+    socket.once("close", fechou);
+    socket.once("error", falhou);
+  });
+}
+
+/**
  * Executa o que o \Deleted marcou.
  *
  * Duas regras do protocolo que parecem detalhe e nao sao:
@@ -1164,14 +1207,50 @@ async function tratar(
     const itens = corte === -1 ? "" : args.slice(corte + 1);
 
     const ids = expandirIntervalo(spec, sessao, porUid);
-    const linhas = await prisma.message.findMany({
-      where: { id: { in: ids }, mailboxId: caixaId },
-      orderBy: { uid: "asc" },
-    });
+    const pedidoMaiusculo = itens.toUpperCase();
+    const pedeCorpo = pedidoMaiusculo.includes("BODYSTRUCTURE") || /BODY(?:\.PEEK)?\[/.test(pedidoMaiusculo);
 
-    for (const m of linhas) {
-      const posicao = pasta.sequencia.findIndex((s) => s.id === m.id) + 1;
-      responder(socket, await montarFetch(m as unknown as LinhaFetch, itens, porUid, posicao));
+    // Uma caixa real pode ter gigabytes. Buscar todas as linhas de uma vez
+    // mantinha corpos HTML/texto de toda a pasta no heap ate o fim do comando.
+    // Os lotes preservam a ordem por UID e liberam cada grupo depois do envio.
+    for (let inicio = 0; inicio < ids.length; inicio += LOTE_FETCH) {
+      const idsDoLote = ids.slice(inicio, inicio + LOTE_FETCH);
+      const linhas = await prisma.message.findMany({
+        where: { id: { in: idsDoLote }, mailboxId: caixaId },
+        orderBy: { uid: "asc" },
+        select: {
+          id: true,
+          uid: true,
+          seen: true,
+          flagged: true,
+          answered: true,
+          draft: true,
+          deleted: true,
+          sizeBytes: true,
+          receivedAt: true,
+          subject: true,
+          fromAddress: true,
+          fromName: true,
+          toAddresses: true,
+          ccAddresses: true,
+          replyTo: true,
+          rfcMessageId: true,
+          inReplyTo: true,
+          storageKey: true,
+          // BODYSTRUCTURE e secoes numeradas usam estes campos. Consultas de
+          // FLAGS/ENVELOPE nao carregam os corpos grandes da pasta inteira.
+          bodyText: pedeCorpo ? true : undefined,
+          bodyHtml: pedeCorpo ? true : undefined,
+        },
+      });
+
+      for (const m of linhas) {
+        const posicao = pasta.sequencia.findIndex((s) => s.id === m.id) + 1;
+        await responderComContrapressao(
+          socket,
+          await montarFetch(m as unknown as LinhaFetch, itens, porUid, posicao),
+        );
+      }
     }
     return ok();
   }

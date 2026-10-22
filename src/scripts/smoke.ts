@@ -10,6 +10,8 @@
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1220,6 +1222,38 @@ console.log("\n[dns] Plano de publicacao na Cloudflare");
   check("include entra antes do all", spfComInclude("v=spf1 ip4:1.2.3.4 -all", include) === `v=spf1 ip4:1.2.3.4 ${include} -all`);
   check("include nao e repetido", spfComInclude(spfNosso, include) === spfNosso);
   check("SPF sem all ganha o include no fim", spfComInclude("v=spf1 a mx", include) === `v=spf1 a mx ${include}`);
+}
+
+console.log("\n[imap] Contrapressao em sincronizacao grande");
+{
+  const { responderComContrapressao } = await import("../mta/imap.js");
+  const transporte = new EventEmitter() as EventEmitter & {
+    destroyed: boolean;
+    write: (dados: Buffer) => boolean;
+    off: EventEmitter["off"];
+    once: EventEmitter["once"];
+  };
+  transporte.destroyed = false;
+  let bytesEscritos = 0;
+  transporte.write = (dados: Buffer) => {
+    bytesEscritos += dados.byteLength;
+    return false;
+  };
+
+  let terminou = false;
+  const envio = responderComContrapressao(
+    transporte as unknown as Socket,
+    Buffer.alloc(1024 * 1024, 0x61),
+  ).then(() => {
+    terminou = true;
+  });
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  check("FETCH espera o socket escoar", !terminou);
+  transporte.emit("drain");
+  await envio;
+  check("FETCH continua depois do drain", terminou);
+  check("resposta preserva literal e CRLF", bytesEscritos === 1024 * 1024 + 2);
 }
 
 console.log(`\n${failed === 0 ? "PASSOU" : "FALHOU"} — ${passed} verificacoes ok, ${failed} falhas\n`);
