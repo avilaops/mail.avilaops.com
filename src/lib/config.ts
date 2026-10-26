@@ -48,6 +48,9 @@ export const config = {
   hostname: optional("MAIL_HOSTNAME", "mail.avilaops.com"),
   storageDir: optional("MAIL_STORAGE_DIR", "/var/lib/avila-mail/blobs"),
 
+  submission: {
+    clientSavedMailboxes: optional("MAIL_SMTP_CLIENT_SAVES_SENT"),
+  },
   ports: {
     inbound: int("MAIL_INBOUND_PORT", 25),
     submission: int("MAIL_SUBMISSION_PORT", 587),

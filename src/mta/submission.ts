@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { simpleParser } from "mailparser";
 import { SMTPServer, type SMTPServerDataStream, type SMTPServerSession } from "smtp-server";
 import type { Readable } from "node:stream";
 import type { TlsOptions } from "node:tls";
@@ -11,6 +12,7 @@ import { upgradeHashIfNeeded } from "../services/passwordUpgrade.js";
 import { enqueueOutbound } from "./queue.js";
 import { storeCopyInMailbox } from "./deliver-local.js";
 import { consumeSendQuota } from "../services/sendQuota.js";
+import { serverSavesSent } from "../services/sent-copy.js";
 
 const log = createLogger("smtp-submission");
 
@@ -183,16 +185,20 @@ export function createSubmissionServer(options: { secure: boolean; tls?: TlsOpti
         const envelopeFrom = session.envelope.mailFrom ? session.envelope.mailFrom.address : user.address;
         const senderDomain = parseAddress(envelopeFrom)?.domain ?? config.hostname;
         const prepared = ensureHeaders(raw, senderDomain);
+        const parsed = await simpleParser(prepared, { skipTextLinks: true });
 
         await enqueueOutbound({
           mailboxId: user.mailboxId,
           envelopeFrom,
           recipients,
           raw: prepared,
+          subject: parsed.subject,
           sign: true,
         });
 
-        await storeCopyInMailbox(user.mailboxId, prepared);
+        if (serverSavesSent(user.address, config.submission.clientSavedMailboxes)) {
+          await storeCopyInMailbox(user.mailboxId, prepared);
+        }
 
         log.info("submission aceita", {
           mailboxId: user.mailboxId,

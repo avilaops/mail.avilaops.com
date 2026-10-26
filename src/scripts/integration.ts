@@ -21,6 +21,7 @@ process.env.MAIL_DKIM_ENCRYPTION_KEY ??= "a".repeat(64);
 process.env.MAIL_JWT_SECRET ??= "b".repeat(64);
 process.env.MAIL_HOSTNAME ??= "mail.avilaops.com";
 process.env.MAIL_LOG_LEVEL ??= "warn";
+process.env.MAIL_SMTP_CLIENT_SAVES_SENT = "smtp-client-saved@brilhax.com.br";
 process.env.MP_ACCESS_TOKEN ??= "TEST-token-de-teste";
 process.env.MP_WEBHOOK_SECRET ??= "segredo-de-webhook-para-teste";
 process.env.MP_BACK_URL ??= "https://portal.exemplo.test/assinatura";
@@ -4253,6 +4254,52 @@ check("localiza a validacao interna mais recente", estadoValidacaoAgenda?.mailbo
 check("calcula a janela de observacao", estadoValidacaoAgenda?.startedAt === inicioValidacaoAgenda.toISOString() && estadoValidacaoAgenda.endsAt === fimValidacaoAgenda.toISOString());
 check("agrega lembretes da caixa observada", estadoValidacaoAgenda?.reminders.sent === 1);
 check("informa que a janela ainda esta em andamento", estadoValidacaoAgenda?.observationComplete === false);
+
+console.log("\n[51] Submission SMTP: assunto e copia por caixa");
+const { createSubmissionServer } = await import("../mta/submission.js");
+const { readFileSync: readTlsFile } = await import("node:fs");
+const { serverSavesSent } = await import("../services/sent-copy.js");
+check("copia automatica continua sendo o padrao", serverSavesSent("a@b.test", ""));
+check("configuracao nao afeta outra caixa", serverSavesSent("outra@b.test", "a@b.test"));
+check("configuracao normaliza espacos e maiusculas", !serverSavesSent("A@B.TEST", " a@b.test, c@b.test "));
+const smtpRegression = createSubmissionServer({
+  secure: true,
+  tls: {
+    cert: readTlsFile(process.env.MAIL_TESTE_CERT!),
+    key: readTlsFile(process.env.MAIL_TESTE_KEY!),
+  },
+});
+await new Promise<void>((r) => smtpRegression.listen(0, "127.0.0.1", r));
+const smtpRegressionPort = (smtpRegression.server.address() as { port: number }).port;
+try {
+  for (const clientSaves of [false, true]) {
+    const username = clientSaves ? "smtp-client-saved" : "smtp-server-saved";
+    const address = username + "@brilhax.com.br";
+    const regressionMailbox = await createMailbox({
+      domain: "brilhax.com.br", username, password: SENHA, mustChangePassword: false,
+    });
+    const transport = createTransport({
+      host: "127.0.0.1", port: smtpRegressionPort, secure: true,
+      tls: { rejectUnauthorized: true, servername: "localhost" },
+      auth: { user: address, pass: SENHA },
+    });
+    await transport.sendMail({
+      from: address, to: "contato@brilhax.com.br",
+      subject: "Apresentação VedaShow — teste", text: "Teste local sem entrega externa.",
+    });
+    transport.close();
+    const outgoing = await prisma.outboundMessage.findFirst({
+      where: { mailboxId: regressionMailbox.id },
+    });
+    check("SMTP preserva assunto Unicode na fila", outgoing?.subject === "Apresentação VedaShow — teste");
+    const copies = await prisma.message.count({
+      where: { mailboxId: regressionMailbox.id, folder: { kind: "sent" } },
+    });
+    check(clientSaves ? "SMTP deixa a copia para o cliente configurado" : "SMTP preserva a copia para as demais caixas", copies === (clientSaves ? 0 : 1));
+  }
+} finally {
+  await new Promise<void>((r) => smtpRegression.close(r));
+}
 
 await prisma.$disconnect();
 rmSync(workDir, { recursive: true, force: true });

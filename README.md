@@ -66,6 +66,15 @@ senha). Webmail precisa de `SSO_ENABLED=true` (unit do systemd); a API, de
 
 Caddy: so `/api/v1/*` vai para a API; o resto de `/api/*` e BFF do webmail.
 
+## Copias em Enviados de clientes SMTP
+
+O servidor salva uma copia de seguranca por padrao. Para caixas cujo Outlook
+ja salva todas as mensagens por IMAP APPEND, configure
+`MAIL_SMTP_CLIENT_SAVES_SENT=luana@vedashow.com.br,joseluis@vedashow.com.br`.
+Somente essas caixas deixam a copia sob responsabilidade do cliente; webmail
+e outras caixas mantem o comportamento existente. Se trocar o cliente ou
+desativar nele a gravacao de Enviados, retire a caixa dessa lista.
+
 ## Testes
 
 ```bash
