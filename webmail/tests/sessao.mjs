@@ -75,7 +75,16 @@ const backend = createServer(async (req, res) => {
     }
     return responder(200, estadoPush);
   }
-  if (req.url === "/v1/me/folders") return responder(200, { folders: [] });
+  if (req.url === "/v1/me/folders") return responder(200, { folders: [
+    { id: "pasta-entrada-ci", name: "Entrada", kind: "inbox", total: 0, unread: 0 },
+    { id: "pasta-arquivo-ci", name: "Arquivo", kind: "archive", total: 0, unread: 0 },
+  ] });
+  if (req.url?.startsWith("/v1/me/messages/aviso-ci?")) return responder(200, {
+    id: "aviso-ci", folderId: "pasta-arquivo-ci", threadKey: null, fromAddress: "remetente@exemplo.test", fromName: "Remetente CI", toAddresses: [], ccAddresses: [],
+    subject: "Mensagem exata do aviso CI", snippet: "Corpo CI", seen: true, flagged: false, answered: false, hasAttachments: false, sizeBytes: 20,
+    spamScore: null, quarantineReason: null, senderVerified: true, receivedAt: "2026-10-28T00:00:00Z", bodyText: "Corpo CI", bodyHtml: null, blockedRemoteImages: 0, attachments: [], convite: null,
+  });
+  if (req.url?.startsWith("/v1/me/messages/aviso-removido?")) return responder(404, { error: { message: "Mensagem não encontrada." } });
   if (req.url?.startsWith("/v1/me/messages")) return responder(200, { messages: [], nextCursor: null });
   responder(200, {});
 });
@@ -236,6 +245,20 @@ try {
   assert.equal(estadoPush.habilitadoAqui, false, "falha local nao mantem servidor autorizado");
   assert.equal(await avisosReais.getByRole("button", { name: "Desligar aqui" }).count(), 0, "inscricao local orfa nao aparece como ligada");
   await pagina.evaluate(() => window.limparAvisosCi());
+  await pagina.goto(`${base}/caixa?mensagem=aviso-ci`);
+  await pagina.getByRole("heading", { name: "Mensagem exata do aviso CI", exact: true }).waitFor();
+  await contexto.clearCookies();
+  const pedidoSemSessao = await contexto.request.get(`${base}/caixa?mensagem=aviso-ci`, { maxRedirects: 0 });
+  const ponteDestino = new URL(pedidoSemSessao.headers().location, base);
+  assert.equal(ponteDestino.searchParams.get("returnTo"), "/caixa?mensagem=aviso-ci", "destino do aviso sobrevive a ponte sem sessao");
+  await pagina.goto(`${base}/entrar?local=1&returnTo=${encodeURIComponent("/caixa?mensagem=aviso-ci")}`);
+  await pagina.getByLabel("Endereço").fill("teste@exemplo.test");
+  await pagina.getByLabel("Senha", { exact: true }).fill("somente-ci");
+  await pagina.getByRole("button", { name: "Entrar", exact: true }).click();
+  await pagina.getByRole("heading", { name: "Mensagem exata do aviso CI", exact: true }).waitFor();
+  assert.equal(new URL(pagina.url()).searchParams.get("mensagem"), "aviso-ci", "login local conserva destino do aviso");
+  await pagina.goto(`${base}/caixa?mensagem=aviso-removido`);
+  await pagina.getByRole("alert").filter({ hasText: "Mensagem não encontrada." }).waitFor();
   let saiuDoAuth = 0;
   let inicioNovoLogin = 0;
   await pagina.route("https://auth.exemplo.test/**", async (rota) => {
