@@ -2986,17 +2986,17 @@ await (async () => {
   };
   check("transporte envia somente a dois aparelhos autorizados", (await capturarEnvio()).join() === [endpointA, endpointB].sort().join());
   const abortarAvisos = new AbortController();
-  const limiteAvisos = setTimeout(() => abortarAvisos.abort(), 30_000);
+  const limiteAvisos = setTimeout(() => abortarAvisos.abort(), 45_000);
   const fluxoAvisos = await fetch(`${baseAgendaApi}/v1/me/events`, { headers: { Authorization: `Bearer ${a.accessToken}` }, signal: abortarAvisos.signal });
   const leitorAvisos = fluxoAvisos.body!.getReader();
   let bufferAvisos = "";
-  const lerAviso = async (): Promise<{ notify: boolean }> => {
+  const lerAviso = async (): Promise<{ notify: boolean; messages: Array<Record<string, unknown>>; cursor?: string }> => {
     while (true) {
       const divisor = bufferAvisos.indexOf("\n\n");
       if (divisor !== -1) {
         const evento = bufferAvisos.slice(0, divisor);
         bufferAvisos = bufferAvisos.slice(divisor + 2);
-        if (evento.startsWith("event: message\n")) return JSON.parse(evento.split("\ndata: ")[1]!) as { notify: boolean };
+        if (evento.includes("event: message\n")) return { ...JSON.parse(evento.split("\ndata: ")[1]!), cursor: evento.match(/^id: (.+)$/m)?.[1] } as { notify: boolean; messages: Array<Record<string, unknown>>; cursor?: string };
       } else {
         const parte = await leitorAvisos.read();
         if (parte.done) throw new Error("Stream terminou antes do aviso");
@@ -3008,7 +3008,11 @@ await (async () => {
     await prisma.mailboxSettings.upsert({ where: { mailboxId: mailboxPush }, create: { mailboxId: mailboxPush, notifyEnabled: false }, update: { notifyEnabled: false } });
     const mensagemSilenciosa = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox");
     await prisma.message.update({ where: { id: mensagemSilenciosa! }, data: { receivedAt: new Date() } });
-    check("SSE entrega dados mas cala balao quando preferencia desliga", (await lerAviso()).notify === false);
+    const silencioso = await lerAviso();
+    check("SSE entrega dados mas cala balao quando preferencia desliga", silencioso.notify === false);
+    const resumoSse = silencioso.messages.find((mensagem) => mensagem.id === mensagemSilenciosa);
+    check("SSE usa resumo completo igual ao da listagem", typeof resumoSse?.folderId === "string" && Array.isArray(resumoSse.toAddresses) &&
+      typeof resumoSse.seen === "boolean" && typeof resumoSse.sizeBytes === "number" && typeof resumoSse.senderVerified === "boolean");
     await prisma.mailboxSettings.update({ where: { mailboxId: mailboxPush }, data: { notifyEnabled: true } });
     const mensagemAudivel = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox");
     await prisma.message.update({ where: { id: mensagemAudivel! }, data: { receivedAt: new Date() } });
@@ -3016,7 +3020,43 @@ await (async () => {
     await habilitar(a.accessToken, false);
     const mensagemAparelhoMudo = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox");
     await prisma.message.update({ where: { id: mensagemAparelhoMudo! }, data: { receivedAt: new Date() } });
-    check("SSE aberto respeita desligamento posterior do aparelho", (await lerAviso()).notify === false);
+    const aparelhoMudo = await lerAviso();
+    check("SSE aberto respeita desligamento posterior do aparelho", aparelhoMudo.notify === false);
+    check("SSE publica cursor retomavel por evento", Boolean(aparelhoMudo.cursor));
+    if (aparelhoMudo.cursor) {
+      abortarAvisos.abort();
+      const idsLote = await Promise.all(Array.from({ length: 25 }, () => storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox")));
+      // Mesmo Date remoto, antigo: ordem de chegada nao pode vir do header.
+      await prisma.message.updateMany({ where: { id: { in: idsLote.filter((id): id is string => Boolean(id)) } }, data: { receivedAt: new Date("2001-01-01T00:00:00Z") } });
+      const lerLote = async (cursor: string, porHeader: boolean) => {
+        const aborto = new AbortController();
+        const limite = setTimeout(() => aborto.abort(), 15_000);
+        const resposta = await fetch(`${baseAgendaApi}/v1/me/events${porHeader ? "" : `?cursor=${encodeURIComponent(cursor)}`}`, {
+          headers: { Authorization: `Bearer ${a.accessToken}`, ...(porHeader ? { "Last-Event-ID": cursor } : {}) }, signal: aborto.signal,
+        });
+        const leitor = resposta.body!.getReader();
+        let buffer = "";
+        try {
+          while (true) {
+            const divisor = buffer.indexOf("\n\n");
+            if (divisor !== -1) {
+              const evento = buffer.slice(0, divisor); buffer = buffer.slice(divisor + 2);
+              if (evento.includes("event: message\n")) return { ...JSON.parse(evento.split("\ndata: ")[1]!), cursor: evento.match(/^id: (.+)$/m)?.[1] } as { messages: Array<{ id: string }>; cursor: string };
+            } else {
+              const parte = await leitor.read();
+              if (parte.done) throw new Error("Stream do lote terminou antes da mensagem");
+              buffer += new TextDecoder().decode(parte.value);
+            }
+          }
+        } finally { aborto.abort(); clearTimeout(limite); }
+      };
+      const primeiroLote = await lerLote(aparelhoMudo.cursor, false);
+      const duranteQueda = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox");
+      const segundoLote = await lerLote(primeiroLote.cursor, true);
+      const retomadas = [...primeiroLote.messages, ...segundoLote.messages].map((mensagem) => mensagem.id);
+      check("cursor recupera mais de 20 empates e mensagem durante queda sem duplicar", primeiroLote.messages.length === 20 &&
+        new Set(retomadas).size === 26 && idsLote.every((id) => retomadas.includes(id!)) && retomadas.includes(duranteQueda!));
+    }
     await registrar(a.accessToken, endpointA);
   } finally {
     abortarAvisos.abort();
