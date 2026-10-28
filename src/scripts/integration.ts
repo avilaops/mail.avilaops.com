@@ -234,6 +234,14 @@ check("token adulterado e rejeitado", verifyAccessToken(`${sessao.accessToken}x`
 console.log("\n[5] Rotacao e reuso de refresh token");
 const renovada = await refresh({ refreshToken: sessao.refreshToken, ip: "203.0.113.9" });
 check("refresh emite par novo", renovada.accessToken !== sessao.accessToken);
+const concorrentes = await Promise.all(Array.from({ length: 5 }, () =>
+  refresh({ refreshToken: sessao.refreshToken, ip: "203.0.113.9" }).catch(() => null)));
+check("refresh concorrente reutiliza a mesma sucessora sem derrubar aparelhos",
+  concorrentes.every((item) => item?.refreshToken === renovada.refreshToken));
+const sessaoAnterior = await prisma.mailSession.findUniqueOrThrow({
+  where: { refreshHash: (await import("node:crypto")).createHash("sha256").update(sessao.refreshToken).digest("hex") },
+});
+await prisma.mailSession.update({ where: { id: sessaoAnterior.id }, data: { revokedAt: new Date(Date.now() - 11_000) } });
 await esperaErro("refresh antigo nao serve mais", () =>
   refresh({ refreshToken: sessao.refreshToken }), "invalida");
 await esperaErro("apos reuso, o refresh novo tambem cai", () =>
@@ -241,6 +249,244 @@ await esperaErro("apos reuso, o refresh novo tambem cai", () =>
 
 const eventoReuso = await prisma.mailEvent.findFirst({ where: { type: "session.reuse_detected" } });
 check("reuso vira evento de auditoria", eventoReuso !== null);
+
+const { logout, logoutAll, revokeSession: revogarSessaoTeste } = await import("../services/session.js");
+const { createHash } = await import("node:crypto");
+const hashRefresh = (token: string) => createHash("sha256").update(token).digest("hex");
+const comContexto = await login({ address: "contato@brilhax.com.br", password: SENHA, ip: "203.0.113.9", userAgent: "Navegador de teste" });
+const sessaoOriginal = await prisma.mailSession.findUniqueOrThrow({ where: { refreshHash: hashRefresh(comContexto.refreshToken) } });
+const emParalelo = await Promise.all(Array.from({ length: 6 }, () => refresh({ refreshToken: comContexto.refreshToken })));
+check("primeira rotacao concorrente cria uma unica sucessora", new Set(emParalelo.map((item) => item.refreshToken)).size === 1);
+const sucessora = await prisma.mailSession.findUniqueOrThrow({ where: { refreshHash: hashRefresh(emParalelo[0]!.refreshToken) } });
+check("rotacao preserva expiracao absoluta", sucessora.expiresAt.getTime() === sessaoOriginal.expiresAt.getTime());
+check("refresh informa TTL restante", emParalelo[0]!.refreshExpiresInSeconds > 0 && emParalelo[0]!.refreshExpiresInSeconds <= 30 * 86400);
+check("rotacao preserva IP e navegador", sucessora.ip === sessaoOriginal.ip && sucessora.userAgent === sessaoOriginal.userAgent);
+check("rotacao preserva primeiro acesso", emParalelo[0]!.mailbox.mustChangePassword === comContexto.mailbox.mustChangePassword);
+await logout(comContexto.refreshToken);
+await esperaErro("logout pelo token anterior revoga a sucessora", () => refresh({ refreshToken: emParalelo[0]!.refreshToken }), "invalida");
+await esperaErro("logout nao admite janela de concorrencia", () => refresh({ refreshToken: comContexto.refreshToken }), "invalida");
+
+const outra = await login({ address: "contato@brilhax.com.br", password: SENHA });
+await esperaErro("request atrasado apos logout continua recusado", () => refresh({ refreshToken: comContexto.refreshToken }), "invalida");
+check("request apos logout nao derruba outro aparelho", (await refresh({ refreshToken: outra.refreshToken })).accessToken.length > 0);
+
+const revogarDurante = await login({ address: "contato@brilhax.com.br", password: SENHA });
+const durante = await Promise.allSettled([refresh({ refreshToken: revogarDurante.refreshToken }), logoutAll(caixa.id)]);
+const resultadoDurante = durante[0];
+if (resultadoDurante?.status === "fulfilled") {
+  await esperaErro("sair de todos concorre com rotacao sem deixar sucessora viva", () => refresh({ refreshToken: resultadoDurante.value.refreshToken }), "invalida");
+}
+const aparelho = await login({ address: "contato@brilhax.com.br", password: SENHA });
+const idAparelho = verifyAccessToken(aparelho.accessToken)!.sid;
+const novoAparelho = await refresh({ refreshToken: aparelho.refreshToken });
+await revogarSessaoTeste(caixa.id, idAparelho);
+await esperaErro("revogar aparelho pelo id antigo revoga a familia", () => refresh({ refreshToken: novoAparelho.refreshToken }), "invalida");
+const antesDoLogoutGlobal = await login({ address: "contato@brilhax.com.br", password: SENHA });
+await refresh({ refreshToken: antesDoLogoutGlobal.refreshToken });
+await logoutAll(caixa.id);
+const depoisDoLogoutGlobal = await login({ address: "contato@brilhax.com.br", password: SENHA });
+await prisma.mailSession.update({ where: { refreshHash: hashRefresh(antesDoLogoutGlobal.refreshToken) }, data: { revokedAt: new Date(Date.now() - 11_000) } });
+await esperaErro("ancestral do logout global continua recusado", () => refresh({ refreshToken: antesDoLogoutGlobal.refreshToken }), "invalida");
+const novoLoginPreservado = await refresh({ refreshToken: depoisDoLogoutGlobal.refreshToken }).catch(() => null);
+check("ancestral apos logout global nao derruba novo login", novoLoginPreservado !== null);
+
+console.log("\n[5b] Contrato do SSO com politica atual e prazo do emissor");
+await (async () => {
+  const { createServer } = await import("node:http");
+  const { default: jwtContrato } = await import("jsonwebtoken");
+  const { loginSso } = await import("../services/session.js");
+  const { generateKeyPairSync, randomUUID, randomBytes } = await import("node:crypto");
+  const { handleUserRoute: rotaContratoSso } = await import("../api/me-routes.js");
+  const { fail: falharContrato } = await import("../api/http.js");
+  const chaves = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const publica = { ...chaves.publicKey.export({ format: "jwk" }), kid: "auth-contrato", alg: "RS256", use: "sig" };
+  const segredo = "segredo-sso-exclusivo-do-teste-de-contrato";
+  const antigas = { segredo: process.env.SSO_JWT_SECRET, auth: process.env.MAIL_AUTH_URL };
+  process.env.SSO_JWT_SECRET = segredo;
+  let politica: "permitido" | "negado" | "mfa" | "indisponivel" = "permitido";
+  let consultas = 0;
+  const emissor = createServer((req, res) => {
+    if (req.url === "/oauth/jwks") {
+      res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ keys: [publica] })); return;
+    }
+    consultas++;
+    if (politica === "indisponivel") { res.writeHead(503); res.end(); return; }
+    if (politica === "negado") { res.writeHead(200, { "content-type": "text/html" }); res.end("Login sem acesso"); return; }
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const destino = politica === "mfa" ? "/api/auth/mfa/elevar?app=mail" : url.searchParams.get("returnTo")!;
+    res.writeHead(307, { Location: destino });
+    res.end();
+  });
+  await new Promise<void>((resolve) => emissor.listen(0, "127.0.0.1", resolve));
+  process.env.MAIL_AUTH_URL = `http://127.0.0.1:${(emissor.address() as { port: number }).port}`;
+  const receptor = createServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    void rotaContratoSso(req, res, url.pathname, req.method ?? "GET", url)
+      .then((tratada) => { if (!tratada) falharContrato(res, 404, "Rota ausente"); })
+      .catch((erro: unknown) => falharContrato(res, erro instanceof AuthError ? erro.statusCode : 400, "Aviso recusado"));
+  });
+  await new Promise<void>((resolve) => receptor.listen(0, "127.0.0.1", resolve));
+  const baseReceptor = `http://127.0.0.1:${(receptor.address() as { port: number }).port}`;
+  const agora = Math.floor(Date.now() / 1000);
+  const emitir = (extra: Record<string, unknown> = {}) => {
+    const payload: Record<string, unknown> = { sub: "identidade-auth-contrato", email: "contato@brilhax.com.br", iat: agora - 60, exp: agora + 1800, ...extra };
+    for (const chave of Object.keys(payload)) if (payload[chave] === undefined) delete payload[chave];
+    return jwtContrato.sign(payload, segredo, { issuer: "auth.avilaops.com" });
+  };
+  const token = emitir();
+  let caixaExtraSso: string | null = null;
+  try {
+    politica = "negado";
+    await esperaErro("callback direto nao contorna permissao do Auth", () => loginSso({ ssoToken: token }), "acesso");
+    politica = "mfa";
+    await esperaErro("callback direto nao contorna segundo fator", () => loginSso({ ssoToken: token }), "fator");
+    politica = "permitido";
+    const aberta = await loginSso({ ssoToken: token, ip: "203.0.113.9", userAgent: "SSO contrato" });
+    if ("choose" in aberta) throw new Error("Esperava somente uma caixa no contrato SSO");
+    const persistida = await prisma.mailSession.findUniqueOrThrow({ where: { refreshHash: hashRefresh(aberta.refreshToken) } });
+    check("sessao SSO nao ultrapassa validade emitida pelo Auth", persistida.expiresAt.getTime() <= (agora + 1800) * 1000);
+    politica = "indisponivel";
+    let indisponibilidadePreservada = false;
+    try { await refresh({ refreshToken: aberta.refreshToken }); }
+    catch (erro) { indisponibilidadePreservada = erro instanceof AuthError && erro.statusCode === 503; }
+    check("falha temporaria do Auth preserva status recuperavel", indisponibilidadePreservada);
+    check("falha do Auth nao consome refresh Mail", !(await prisma.mailSession.findUniqueOrThrow({ where: { id: persistida.id } })).revokedAt);
+    politica = "negado";
+    await esperaErro("renovacao confere permissao atual no Auth", () => refresh({ refreshToken: aberta.refreshToken }), "acesso");
+    politica = "permitido";
+    check("sessao recupera apos indisponibilidade sem nova senha", (await refresh({ refreshToken: aberta.refreshToken })).accessToken.length > 0);
+    await esperaErro("SSO sem identidade estavel e rejeitado", () => loginSso({ ssoToken: emitir({ sub: undefined }) }), "invalida");
+    await esperaErro("SSO sem prazo e rejeitado", () => loginSso({ ssoToken: emitir({ exp: undefined }) }), "invalida");
+    await esperaErro("token de outra finalidade nao e cookie SSO", () => loginSso({ ssoToken: emitir({ aud: "outro-cliente" }) }), "invalida");
+    check("Mail consultou o gate real de autorizacao do Auth", consultas >= 5);
+    const sessaoAntesDeSair = await loginSso({ ssoToken: token });
+    if ("choose" in sessaoAntesDeSair) throw new Error("Escolha inesperada no teste de logout");
+    const { registrarInscricao: registrarPushSso } = await import("../services/push.js");
+    const endpointSso = "https://push.exemplo.test/contrato-sso";
+    await registrarPushSso(caixa.id, { endpoint: endpointSso, keys: { p256dh: "chave-ci", auth: "auth-ci" } }, "SSO CI", verifyAccessToken(sessaoAntesDeSair.accessToken)!.sid);
+    const localPreservada = await login({ address: "contato@brilhax.com.br", password: SENHA });
+    const sinal = (extra: Record<string, unknown> = {}) => {
+      const { aud, ...claims } = extra;
+      return jwtContrato.sign({
+        sub: "identidade-auth-contrato", events: { "http://schemas.openid.net/event/backchannel-logout": {} },
+        jti: randomUUID(), iat: agora, exp: agora + 120, ...claims,
+      }, chaves.privateKey, { algorithm: "RS256", keyid: "auth-contrato", issuer: "https://auth.avilaops.com", audience: typeof aud === "string" ? aud : "mail", header: { alg: "RS256", typ: "logout+jwt", kid: "auth-contrato" } });
+    };
+    const enviarSinal = (logoutToken: string) => fetch(`${baseReceptor}/v1/auth/sso/logout`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ logoutToken }),
+    });
+    check("logout sem assinatura confiavel e recusado", (await enviarSinal(`${sinal()}adulterado`)).status === 401);
+    check("logout de outro cliente e recusado", (await enviarSinal(sinal({ aud: "outro-cliente" }))).status === 401);
+    check("logout valido e aceito", (await enviarSinal(sinal())).status === 200);
+    check("backchannel remove chaves push da familia SSO", await prisma.mailPushSubscription.count({ where: { endpoint: endpointSso } }) === 0);
+    await esperaErro("logout no Auth revoga refresh vinculado", () => refresh({ refreshToken: sessaoAntesDeSair.refreshToken }), "revogada");
+    await esperaErro("cookie Auth anterior nao reabre apos logout", () => loginSso({ ssoToken: token }), "revogada");
+    check("logout do Auth nao revoga sessao de senha local", (await refresh({ refreshToken: localPreservada.refreshToken })).accessToken.length > 0);
+    check("aviso repetido continua idempotente", (await enviarSinal(sinal())).status === 200);
+    const novoCookie = emitir({ iat: agora + 1 });
+    const depoisDeSair = await loginSso({ ssoToken: novoCookie });
+    check("novo login Auth posterior a revogacao funciona", !("choose" in depoisDeSair));
+    const refreshLegado = randomBytes(48).toString("base64url");
+    const legado = await prisma.mailSession.create({ data: {
+      mailboxId: caixa.id, refreshHash: hashRefresh(refreshLegado), expiresAt: new Date(Date.now() + 86_400_000),
+    } });
+    const { signAccessToken } = await import("../lib/jwt.js");
+    const acessoLegado = signAccessToken({ sub: caixa.id, adr: caixa.address, sid: legado.id });
+    check("access token legado nao contorna a migracao", (await fetch(`${baseReceptor}/v1/me/push`, {
+      headers: { Authorization: `Bearer ${acessoLegado}` },
+    })).status === 401);
+    await esperaErro("sessao anterior sem origem exige reautenticacao unica", () => refresh({ refreshToken: refreshLegado }), "invalida");
+    const segundaCaixa = await createMailbox({ domain: "brilhax.com.br", username: "contrato-sso", password: SENHA,
+      ownerEmail: "contato@brilhax.com.br", mustChangePassword: false });
+    caixaExtraSso = segundaCaixa.id;
+    const escolher = await loginSso({ ssoToken: novoCookie });
+    check("SSO preserva selecao de varias caixas", "choose" in escolher && escolher.choose.length === 2);
+    await esperaErro("SSO nao aceita caixa de outra conta", () => loginSso({ ssoToken: novoCookie, address: "outra@exemplo.test" }), "pertence");
+    const selecionada = await loginSso({ ssoToken: novoCookie, address: segundaCaixa.address });
+    if ("choose" in selecionada) throw new Error("Caixa escolhida nao foi aberta");
+    await prisma.mailbox.update({ where: { id: segundaCaixa.id }, data: { ownerEmail: "outro-dono@exemplo.test" } });
+    check("troca de dono revoga acesso SSO imediatamente", (await fetch(`${baseReceptor}/v1/me/push`, {
+      headers: { Authorization: `Bearer ${selecionada.accessToken}` },
+    })).status === 403);
+    await esperaErro("caixa transferida nao renova pelo dono antigo", () => refresh({ refreshToken: selecionada.refreshToken }), "pertence");
+    const outraIdentidade = await loginSso({ ssoToken: emitir({ sub: "outra-identidade-auth" }) });
+    if ("choose" in outraIdentidade) throw new Error("Outra identidade deveria ter apenas uma caixa");
+    const corrida = await Promise.allSettled([
+      loginSso({ ssoToken: emitir({ iat: agora + 2 }) }),
+      enviarSinal(sinal({ iat: agora + 2, exp: agora + 122 })),
+    ]);
+    check("logout concorrente e aceito", corrida[1]?.status === "fulfilled" && corrida[1].value.status === 200);
+    check("login concorrente nao ressuscita JWT revogado", (await prisma.mailSession.count({ where: {
+      ssoSubject: "identidade-auth-contrato", ssoIssuedAt: { lte: new Date((agora + 2) * 1000) }, revokedAt: null,
+    } })) === 0);
+    check("revogacao nao cruza identidades", (await refresh({ refreshToken: outraIdentidade.refreshToken })).accessToken.length > 0);
+    check("aviso antigo nao regride o corte persistido", (await enviarSinal(sinal())).status === 200 &&
+      (await prisma.mailSsoRevocation.findUniqueOrThrow({ where: { subject: "identidade-auth-contrato" } })).revokedBefore.getTime() === (agora + 2) * 1000);
+    const eventoSsf = (tipo: string, quando: number) => jwtContrato.sign({
+      jti: randomUUID(), iat: quando,
+      sub_id: { format: "complex", user: { format: "email", email: "contato@brilhax.com.br" } },
+      events: { [tipo]: { event_timestamp: quando } },
+    }, chaves.privateKey, { algorithm: "RS256", keyid: "auth-contrato", issuer: "https://auth.avilaops.com", audience: "mail", header: { alg: "RS256", typ: "secevent+jwt", kid: "auth-contrato" } });
+    const enviarSsf = (securityEventToken: string) => fetch(`${baseReceptor}/v1/auth/sso/events`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ securityEventToken }),
+    });
+    const cookieAntesDoSinal = emitir({ iat: agora + 3 });
+    const antesDoSinal = await loginSso({ ssoToken: cookieAntesDoSinal });
+    if ("choose" in antesDoSinal) throw new Error("SSF esperava somente uma caixa");
+    await registrarPushSso(caixa.id, { endpoint: endpointSso, keys: { p256dh: "chave-ci", auth: "auth-ci" } }, "SSO CI", verifyAccessToken(antesDoSinal.accessToken)!.sid);
+    const localSsf = await login({ address: "contato@brilhax.com.br", password: SENHA });
+    const sinalDesligada = eventoSsf("https://schemas.openid.net/secevent/risc/event-type/account-disabled", agora + 3);
+    check("SSF sem assinatura confiavel e recusado", (await enviarSsf(`${sinalDesligada}invalido`)).status === 401);
+    check("sinal de conta desligada e aceito", (await enviarSsf(sinalDesligada)).status === 200);
+    check("SSF remove chaves push da identidade revogada", await prisma.mailPushSubscription.count({ where: { endpoint: endpointSso } }) === 0);
+    await esperaErro("conta desligada nao renova Mail", () => refresh({ refreshToken: antesDoSinal.refreshToken }), "revogada");
+    await esperaErro("conta desligada nao reutiliza cookie anterior", () => loginSso({ ssoToken: cookieAntesDoSinal }), "revogada");
+    check("sinal SSF nao derruba sessao de senha local", (await refresh({ refreshToken: localSsf.refreshToken })).accessToken.length > 0);
+    const cookieComNovoFator = emitir({ iat: agora + 4 });
+    const antesDoFator = await loginSso({ ssoToken: cookieComNovoFator });
+    if ("choose" in antesDoFator) throw new Error("Credencial esperava somente uma caixa");
+    check("sinal de mudanca de credencial e aceito", (await enviarSsf(eventoSsf("https://schemas.openid.net/secevent/caep/event-type/credential-change", agora + 4))).status === 200);
+    await esperaErro("mudanca de MFA exige nova prova do Auth", () => refresh({ refreshToken: antesDoFator.refreshToken }), "revogada");
+    const cookieAtual = emitir({ iat: agora + 5 });
+    check("Auth pode restabelecer acesso com sessao nova", !("choose" in await loginSso({ ssoToken: cookieAtual })));
+    await enviarSsf(eventoSsf("https://schemas.openid.net/secevent/caep/event-type/credential-change", agora + 6));
+    await esperaErro("prova no mesmo segundo exige recuperacao sem liberar prova antiga", () => loginSso({ ssoToken: emitir({ iat: agora + 6, mfa: true }) }), "revogada");
+    const sessaoStream = await loginSso({ ssoToken: emitir({ sub: "identidade-stream-auth", iat: agora + 7 }) });
+    if ("choose" in sessaoStream) throw new Error("Stream esperava uma caixa");
+    const marcaSenhaAnterior = (await prisma.mailbox.findUniqueOrThrow({ where: { id: caixa.id }, select: { mustChangePassword: true } })).mustChangePassword;
+    await prisma.mailbox.update({ where: { id: caixa.id }, data: { mustChangePassword: false } });
+    const abortoStream = new AbortController();
+    const limiteStream = setTimeout(() => abortoStream.abort(), 12_000);
+    const fluxo = await fetch(`${baseReceptor}/v1/me/events`, {
+      headers: { Authorization: `Bearer ${sessaoStream.accessToken}` }, signal: abortoStream.signal,
+    });
+    check("teste recebe SSE autenticado em vez de pagina ou erro", fluxo.status === 200 && fluxo.headers.get("content-type")?.startsWith("text/event-stream") === true);
+    const leitor = fluxo.body!.getReader();
+    await leitor.read();
+    const proximo = leitor.read();
+    const fechouAntes = await Promise.race([
+      proximo.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 150)),
+    ]);
+    check("SSE permanece aberto antes da revogacao", !fechouAntes);
+    await enviarSinal(sinal({ sub: "identidade-stream-auth", iat: agora + 7, exp: agora + 127 }));
+    let streamEncerrado = false;
+    try { streamEncerrado = (await proximo).done === true; } catch { /* timeout nao conta como revogacao */ }
+    finally {
+      clearTimeout(limiteStream); abortoStream.abort(); leitor.releaseLock();
+      await prisma.mailbox.update({ where: { id: caixa.id }, data: { mustChangePassword: marcaSenhaAnterior } });
+    }
+    check("logout Auth encerra canal SSE ja aberto na proxima verificacao", streamEncerrado);
+  } finally {
+    if (caixaExtraSso) await prisma.mailbox.delete({ where: { id: caixaExtraSso } });
+    receptor.closeAllConnections();
+    await new Promise<void>((resolve) => receptor.close(() => resolve()));
+    emissor.closeAllConnections();
+    await new Promise<void>((resolve) => emissor.close(() => resolve()));
+    for (const [chave, valor] of [["SSO_JWT_SECRET", antigas.segredo], ["MAIL_AUTH_URL", antigas.auth]] as const) {
+      if (valor === undefined) delete process.env[chave]; else process.env[chave] = valor;
+    }
+  }
+})();
 
 console.log("\n[6] Forca bruta: bloqueia o atacante sem trancar o cliente");
 await createMailbox({ domain: "brilhax.com.br", username: "alvo", password: SENHA });
@@ -277,7 +523,7 @@ check("lista boas-vindas e mensagem recebida", listagem.messages.length === 2);
 const recebida = listagem.messages.find((m) => m.subject === "Orcamento aprovado");
 check("mensagem recebida aparece na listagem", recebida !== undefined);
 check("marca remetente como verificado", recebida?.senderVerified === true);
-check("nao vaza authResult cru na listagem", recebida?.authResult === undefined);
+check("nao vaza authResult cru na listagem", recebida !== undefined && !("authResult" in recebida));
 
 const busca = await listMessages({ mailboxId, query: "orcamento" });
 check("busca encontra por assunto", busca.messages.length === 1);
@@ -2692,6 +2938,222 @@ const servidorAgendaApi = criarServidorHttp((req, res) => {
 await new Promise<void>((r) => servidorAgendaApi.listen(0, "127.0.0.1", () => r()));
 const portaAgendaApi = (servidorAgendaApi.address() as { port: number }).port;
 const baseAgendaApi = `http://127.0.0.1:${portaAgendaApi}`;
+
+console.log("\n[46a] Push acompanha o aparelho autenticado e as preferencias");
+await (async () => {
+  const { avisoPermitido, listarInscricoes, enviarAviso } = await import("../services/push.js");
+  const { config: configPush } = await import("../lib/config.js");
+  const { default: transportePush } = await import("web-push");
+  const enviarOriginal = transportePush.sendNotification;
+  const configuracaoOriginal = { ...configPush.push };
+  const entregasPush: string[] = [];
+  transportePush.sendNotification = async (inscricao) => {
+    entregasPush.push(inscricao.endpoint);
+    return { statusCode: 201, body: "", headers: {} };
+  };
+  try {
+  const a = await login({ address: "davteste@brilhax.com.br", password: "SenhaDoDav12345" });
+  const b = await login({ address: "davteste@brilhax.com.br", password: "SenhaDoDav12345" });
+  const mailboxPush = a.mailbox.id;
+  const endpointA = "https://push.exemplo.test/aparelho-a";
+  const endpointB = "https://push.exemplo.test/aparelho-b";
+  const registrar = async (token: string, endpoint: string) => fetch(`${baseAgendaApi}/v1/me/push`, {
+    method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint, keys: { p256dh: "chave-publica-exclusiva-ci", auth: "segredo-exclusivo-ci" } }),
+  });
+  const habilitar = async (token: string, enabled: boolean) => fetch(`${baseAgendaApi}/v1/me/push`, {
+    method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ enabled }),
+  });
+  const estadoA = async () => (await fetch(`${baseAgendaApi}/v1/me/push`, { headers: { Authorization: `Bearer ${a.accessToken}` } })).json() as Promise<{ habilitadoAqui: boolean }>;
+  check("aparelho novo depende de autorizacao explicita", (await estadoA()).habilitadoAqui === false);
+  check("aviso com aba aberta pode ser autorizado sem VAPID", (await habilitar(a.accessToken, true)).status === 200 && (await estadoA()).habilitadoAqui === true);
+  check("desligar aqui desativa tambem aviso com aba aberta", (await habilitar(a.accessToken, false)).status === 200 && (await estadoA()).habilitadoAqui === false);
+  check("dois aparelhos autorizam push independentemente", (await registrar(a.accessToken, endpointA)).status === 201 &&
+    (await registrar(b.accessToken, endpointB)).status === 201);
+  const conferirEstadoA = await (await fetch(`${baseAgendaApi}/v1/me/push`, { headers: { Authorization: `Bearer ${a.accessToken}` } })).json() as { aparelhos: Array<{ endpoint: string; nesteAparelho: boolean }> };
+  check("estado remoto distingue autorizacao deste login", conferirEstadoA.aparelhos.find((item) => item.endpoint === endpointA)?.nesteAparelho === true &&
+    conferirEstadoA.aparelhos.find((item) => item.endpoint === endpointB)?.nesteAparelho === false);
+  check("envio de teste informa indisponibilidade sem VAPID", (await fetch(`${baseAgendaApi}/v1/me/push/test`, { method: "POST", headers: { Authorization: `Bearer ${a.accessToken}` } })).status === 503);
+  Object.assign(configPush.push, transportePush.generateVAPIDKeys());
+  entregasPush.length = 0;
+  const respostaTestePush = await fetch(`${baseAgendaApi}/v1/me/push/test`, { method: "POST", headers: { Authorization: `Bearer ${a.accessToken}` } });
+  const resultadoTestePush = await respostaTestePush.json() as { tentativas: number; enviados: number };
+  check("teste vai somente ao proprio aparelho e informa aceite do provedor", respostaTestePush.status === 200 && resultadoTestePush.enviados === 1 && resultadoTestePush.tentativas === 1 && entregasPush.join() === endpointA);
+  const capturarEnvio = async () => {
+    entregasPush.length = 0;
+    await enviarAviso(mailboxPush, { titulo: "Contrato de entrega", corpo: "Teste CI", tipo: "seguranca" });
+    return [...entregasPush].sort();
+  };
+  check("transporte envia somente a dois aparelhos autorizados", (await capturarEnvio()).join() === [endpointA, endpointB].sort().join());
+  const abortarAvisos = new AbortController();
+  const limiteAvisos = setTimeout(() => abortarAvisos.abort(), 45_000);
+  const fluxoAvisos = await fetch(`${baseAgendaApi}/v1/me/events`, { headers: { Authorization: `Bearer ${a.accessToken}` }, signal: abortarAvisos.signal });
+  const leitorAvisos = fluxoAvisos.body!.getReader();
+  let bufferAvisos = "";
+  const lerAviso = async (): Promise<{ notify: boolean; messages: Array<Record<string, unknown>>; cursor?: string }> => {
+    while (true) {
+      const divisor = bufferAvisos.indexOf("\n\n");
+      if (divisor !== -1) {
+        const evento = bufferAvisos.slice(0, divisor);
+        bufferAvisos = bufferAvisos.slice(divisor + 2);
+        if (evento.includes("event: message\n")) return { ...JSON.parse(evento.split("\ndata: ")[1]!), cursor: evento.match(/^id: (.+)$/m)?.[1] } as { notify: boolean; messages: Array<Record<string, unknown>>; cursor?: string };
+      } else {
+        const parte = await leitorAvisos.read();
+        if (parte.done) throw new Error("Stream terminou antes do aviso");
+        bufferAvisos += new TextDecoder().decode(parte.value);
+      }
+    }
+  };
+  try {
+    await prisma.mailboxSettings.upsert({ where: { mailboxId: mailboxPush }, create: { mailboxId: mailboxPush, notifyEnabled: false }, update: { notifyEnabled: false } });
+    const mensagemSilenciosa = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox", { notificationKind: "mensagem" });
+    await prisma.message.update({ where: { id: mensagemSilenciosa! }, data: { receivedAt: new Date() } });
+    const silencioso = await lerAviso();
+    check("SSE entrega dados mas cala balao quando preferencia desliga", silencioso.notify === false);
+    const resumoSse = silencioso.messages.find((mensagem) => mensagem.id === mensagemSilenciosa);
+    check("SSE usa resumo completo igual ao da listagem", typeof resumoSse?.folderId === "string" && Array.isArray(resumoSse.toAddresses) &&
+      typeof resumoSse.seen === "boolean" && typeof resumoSse.sizeBytes === "number" && typeof resumoSse.senderVerified === "boolean");
+    await prisma.mailboxSettings.update({ where: { mailboxId: mailboxPush }, data: { notifyEnabled: true } });
+    const mensagemAudivel = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox", { notificationKind: "mensagem" });
+    await prisma.message.update({ where: { id: mensagemAudivel! }, data: { receivedAt: new Date() } });
+    check("SSE permite balao somente com aparelho e preferencia ligados", (await lerAviso()).notify === true);
+    await habilitar(a.accessToken, false);
+    const mensagemAparelhoMudo = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox", { notificationKind: "mensagem" });
+    await prisma.message.update({ where: { id: mensagemAparelhoMudo! }, data: { receivedAt: new Date() } });
+    const aparelhoMudo = await lerAviso();
+    check("SSE aberto respeita desligamento posterior do aparelho", aparelhoMudo.notify === false);
+    check("SSE publica cursor retomavel por evento", Boolean(aparelhoMudo.cursor));
+    if (aparelhoMudo.cursor) {
+      abortarAvisos.abort();
+      const idsLote = await Promise.all(Array.from({ length: 25 }, () => storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox")));
+      // Mesmo Date remoto, antigo: ordem de chegada nao pode vir do header.
+      await prisma.message.updateMany({ where: { id: { in: idsLote.filter((id): id is string => Boolean(id)) } }, data: { receivedAt: new Date("2001-01-01T00:00:00Z") } });
+      const lerLote = async (cursor: string, porHeader: boolean) => {
+        const aborto = new AbortController();
+        const limite = setTimeout(() => aborto.abort(), 15_000);
+        const resposta = await fetch(`${baseAgendaApi}/v1/me/events${porHeader ? "" : `?cursor=${encodeURIComponent(cursor)}`}`, {
+          headers: { Authorization: `Bearer ${a.accessToken}`, ...(porHeader ? { "Last-Event-ID": cursor } : {}) }, signal: aborto.signal,
+        });
+        const leitor = resposta.body!.getReader();
+        let buffer = "";
+        try {
+          while (true) {
+            const divisor = buffer.indexOf("\n\n");
+            if (divisor !== -1) {
+              const evento = buffer.slice(0, divisor); buffer = buffer.slice(divisor + 2);
+              if (evento.includes("event: message\n")) return { ...JSON.parse(evento.split("\ndata: ")[1]!), cursor: evento.match(/^id: (.+)$/m)?.[1] } as { messages: Array<{ id: string }>; cursor: string };
+            } else {
+              const parte = await leitor.read();
+              if (parte.done) throw new Error("Stream do lote terminou antes da mensagem");
+              buffer += new TextDecoder().decode(parte.value);
+            }
+          }
+        } finally { aborto.abort(); clearTimeout(limite); }
+      };
+      const primeiroLote = await lerLote(aparelhoMudo.cursor, false);
+      const duranteQueda = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox");
+      const segundoLote = await lerLote(primeiroLote.cursor, true);
+      const retomadas = [...primeiroLote.messages, ...segundoLote.messages].map((mensagem) => mensagem.id);
+      check("cursor recupera mais de 20 empates e mensagem durante queda sem duplicar", primeiroLote.messages.length === 20 &&
+        new Set(retomadas).size === 26 && idsLote.every((id) => retomadas.includes(id!)) && retomadas.includes(duranteQueda!));
+      const { streamEvents } = await import("../api/me-routes.js");
+      const consultarPreferencia = prisma.mailboxSettings.findUnique;
+      let liberarPreferencia!: () => void;
+      let sinalizarConsulta!: () => void;
+      const preferenciaPendente = new Promise<void>((resolve) => { liberarPreferencia = resolve; });
+      const consultaIniciada = new Promise<void>((resolve) => { sinalizarConsulta = resolve; });
+      Object.assign(prisma.mailboxSettings, { findUnique: (input: { where?: { mailboxId?: string } }) => {
+        const real = Reflect.apply(consultarPreferencia, prisma.mailboxSettings, [input]) as Promise<unknown>;
+        if (input.where?.mailboxId !== mailboxPush) return real;
+        return real.then(async (preferencia) => { sinalizarConsulta(); await preferenciaPendente; return preferencia; });
+      } });
+      const servidorCurto = criarServidorHttp((req, res) => {
+        void streamEvents(req, res, mailboxPush, { pollMs: 20, maxMs: 3000 }).catch(() => { if (!res.writableEnded) res.end(); });
+      });
+      await new Promise<void>((resolve) => servidorCurto.listen(0, "127.0.0.1", resolve));
+      const abortoCurto = new AbortController();
+      const prazoCurto = setTimeout(() => abortoCurto.abort(), 6000);
+      let cursorAntesDoLimite = "";
+      let mensagemNoLimite: string | null = null;
+      try {
+        const respostaCurta = await fetch(`http://127.0.0.1:${(servidorCurto.address() as { port: number }).port}/events`, {
+          headers: { Authorization: `Bearer ${a.accessToken}` }, signal: abortoCurto.signal,
+        });
+        const leitorCurto = respostaCurta.body!.getReader();
+        let textoCurto = new TextDecoder().decode((await leitorCurto.read()).value);
+        cursorAntesDoLimite = textoCurto.match(/^id: (.+)$/m)?.[1] ?? "";
+        mensagemNoLimite = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox");
+        await Promise.race([consultaIniciada, new Promise<void>((_resolve, reject) => setTimeout(() => reject(new Error("Preferencia nao foi consultada no teste do prazo SSE")), 4000))]);
+        while (true) {
+          const parte = await leitorCurto.read(); if (parte.done) break;
+          textoCurto += new TextDecoder().decode(parte.value);
+        }
+        const cursoresPublicados = [...textoCurto.matchAll(/^id: (.+)$/gm)].map((match) => match[1]);
+        check("prazo SSE nao publica cursor de mensagem cuja preferencia ainda esta pendente", textoCurto.includes("event: reconnect") &&
+          !textoCurto.includes("event: message") && cursoresPublicados.every((cursor) => cursor === cursorAntesDoLimite));
+      } finally {
+        liberarPreferencia();
+        Object.assign(prisma.mailboxSettings, { findUnique: consultarPreferencia });
+        clearTimeout(prazoCurto); abortoCurto.abort();
+        await new Promise<void>((resolve) => servidorCurto.close(() => resolve()));
+      }
+      const aposLimite = await lerLote(cursorAntesDoLimite, true);
+      check("reconexao recupera mensagem interrompida pelo prazo", aposLimite.messages.some((mensagem) => mensagem.id === mensagemNoLimite));
+    }
+    await registrar(a.accessToken, endpointA);
+  } finally {
+    abortarAvisos.abort();
+    clearTimeout(limiteAvisos);
+  }
+  const rotacionada = await refresh({ refreshToken: a.refreshToken });
+  check("rotacao conserva inscricao do aparelho", (await listarInscricoes(mailboxPush)).length === 2);
+  await logout(a.refreshToken);
+  check("logout pelo ancestral remove somente o proprio push", (await listarInscricoes(mailboxPush)).map((i) => i.endpoint).join() === endpointB);
+  check("logout remove o segredo de entrega do aparelho", await prisma.mailPushSubscription.count({ where: { endpoint: endpointA } }) === 0);
+  check("transporte nao envia apos logout", (await capturarEnvio()).join() === endpointB);
+  const c = await login({ address: "davteste@brilhax.com.br", password: "SenhaDoDav12345" });
+  await registrar(c.accessToken, endpointA);
+  // O mesmo endpoint muda de autorizacao; logout antigo nao pode apaga-lo.
+  await registrar(b.accessToken, endpointA);
+  await logout(c.refreshToken);
+  check("inscricao reatribuida sobrevive ao logout da autorizacao anterior", (await listarInscricoes(mailboxPush)).length === 2);
+  const idB = verifyAccessToken(b.accessToken)!.sid;
+  await prisma.mailbox.update({ where: { id: mailboxPush }, data: { status: "suspended" } });
+  check("transporte nao envia para caixa suspensa", (await capturarEnvio()).length === 0);
+  await prisma.mailbox.update({ where: { id: mailboxPush }, data: { status: "active" } });
+  await prisma.mailSession.update({ where: { id: idB }, data: { authSource: "sso", ssoEmail: "dono-anterior@exemplo.test" } });
+  check("transporte nao envia a identidade que deixou de ser dona", (await capturarEnvio()).length === 0);
+  await prisma.mailSession.update({ where: { id: idB }, data: { authSource: "password", ssoEmail: null } });
+  await prisma.mailSession.update({ where: { id: idB }, data: { expiresAt: new Date(Date.now() - 1000) } });
+  check("sessao expirada nao recebe push nem aparece como ativa", (await listarInscricoes(mailboxPush)).length === 0);
+  check("transporte nao envia apos expiracao nem alerta de seguranca", (await capturarEnvio()).length === 0);
+  await prisma.mailPushSubscription.create({ data: { mailboxId: mailboxPush, endpoint: "https://push.exemplo.test/sem-familia", p256dh: "chave-ci", auth: "auth-ci" } });
+  check("inscricao sem familia nunca chega ao transporte", (await capturarEnvio()).length === 0);
+  await logoutAll(mailboxPush);
+  check("logout global elimina inclusive inscricoes expiradas", await prisma.mailPushSubscription.count({ where: { mailboxId: mailboxPush } }) === 0);
+  check("token de sessao revogada nao reinscreve aparelho", (await registrar(rotacionada.accessToken, endpointA)).status === 401);
+  const caixaOutraPush = await createMailbox({ domain: "brilhax.com.br", username: "pushoutra", password: "OutraSenhaPush123", mustChangePassword: false });
+  try {
+    const outraConta = await login({ address: "pushoutra@brilhax.com.br", password: "OutraSenhaPush123" });
+    check("mesmo navegador pode ser autorizado em outra conta", (await registrar(outraConta.accessToken, endpointA)).status === 201);
+    await logoutAll(mailboxPush);
+    check("logout da conta anterior preserva inscricao do novo dono", (await listarInscricoes(caixaOutraPush.id)).some((item) => item.endpoint === endpointA));
+  } finally {
+    await prisma.mailbox.delete({ where: { id: caixaOutraPush.id } });
+  }
+  await prisma.mailboxSettings.upsert({ where: { mailboxId: mailboxPush }, create: { mailboxId: mailboxPush, notifyEnabled: false }, update: { notifyEnabled: false } });
+  check("preferencia desligada cala mensagem", !await avisoPermitido(mailboxPush, { titulo: "Teste", corpo: "Teste" }));
+  check("alerta de seguranca ignora silencio da caixa", await avisoPermitido(mailboxPush, { titulo: "Teste", corpo: "Teste", tipo: "seguranca" }));
+  await prisma.mailboxSettings.update({ where: { mailboxId: mailboxPush }, data: { notifyEnabled: true, notifyOnlyInbox: true, notifyQuietStart: 22, notifyQuietEnd: 7 } });
+  check("regra de pasta cala mensagem arquivada", !await avisoPermitido(mailboxPush, { titulo: "Teste", corpo: "Teste", naEntrada: false }, new Date("2035-01-01T15:00:00Z")));
+  check("silencio atravessa meia noite no fuso da operacao", !await avisoPermitido(mailboxPush, { titulo: "Teste", corpo: "Teste" }, new Date("2035-01-02T03:00:00Z")));
+  check("fim do silencio libera mensagem", await avisoPermitido(mailboxPush, { titulo: "Teste", corpo: "Teste" }, new Date("2035-01-02T12:00:00Z")));
+  await prisma.mailboxSettings.update({ where: { mailboxId: mailboxPush }, data: { notifyQuietStart: null, notifyQuietEnd: null } });
+  } finally {
+    transportePush.sendNotification = enviarOriginal;
+    Object.assign(configPush.push, configuracaoOriginal);
+  }
+})();
 
 // Sem credencial, nada existe.
 const semAuth = await fetch(`${baseDav}/dav/`, { method: "PROPFIND" });

@@ -1,6 +1,7 @@
 "use client";
 
 import type { AgendaCalendario, DadosEventoAgenda, EventoAgenda, PreferenciasAgenda } from "@/lib/tipos";
+import { caminhoEntrar, destinoMail } from "./destinoMail";
 
 /**
  * Acesso a API a partir do navegador.
@@ -42,13 +43,20 @@ export async function api<T>(
     if (opcoes.body !== undefined) cabecalhos["Content-Type"] = "application/json";
   }
 
-  const resposta = await fetch(`/api/mail${caminho}`, {
+  const requisitar = () => fetch(`/api/mail${caminho}`, {
     method: metodo,
     headers: cabecalhos,
     body: opcoes.body === undefined ? undefined : JSON.stringify(opcoes.body),
     // Cookie httpOnly precisa acompanhar a requisicao.
     credentials: "same-origin",
   });
+  let resposta = await requisitar();
+  if (resposta.status === 401 && resposta.headers.get("x-mail-retomar") === "1") {
+    const renovada = await fetch("/api/sessao/retomar", {
+      method: "POST", headers: { "x-csrf-token": tokenCsrf() }, credentials: "same-origin",
+    });
+    resposta = renovada.ok ? await requisitar() : renovada;
+  }
 
   const texto = await resposta.text();
   const corpo: unknown = texto ? JSON.parse(texto) : null;
@@ -60,12 +68,13 @@ export async function api<T>(
         : "Erro na requisicao.";
 
     // Sessao morreu enquanto a aba estava aberta: recarregar cai no login.
-    if (resposta.status === 401) window.location.href = "/entrar";
+    const retorno = destinoMail(`${window.location.pathname}${window.location.search}`);
+    if (resposta.status === 401 || resposta.status === 428) window.location.href = caminhoEntrar(retorno);
 
     // Primeiro acesso: a API recusa tudo (409) ate a senha ser definida. So a
     // propria chamada de definir a senha escapa, senao seria um laco.
     if (resposta.status === 409 && !caminho.startsWith("/me/first-password")) {
-      window.location.href = "/definir-senha";
+      window.location.href = `/definir-senha?${new URLSearchParams({ returnTo: retorno })}`;
     }
 
     throw new ErroApi(mensagem, resposta.status);
@@ -168,11 +177,15 @@ export function importarAgenda(uploadId: string, agendaId?: string): Promise<{ i
 }
 
 export async function sair(): Promise<void> {
-  await fetch("/api/sessao", {
+  const resposta = await fetch("/api/sessao", {
     method: "DELETE",
     headers: { "x-csrf-token": tokenCsrf() },
     credentials: "same-origin",
   });
+  if (!resposta.ok) {
+    const corpo = await resposta.json().catch(() => null) as { erro?: string } | null;
+    throw new ErroApi(corpo?.erro ?? "Não foi possível encerrar a sessão. Tente novamente.", resposta.status);
+  }
   // Ir para "/entrar" nao bastava: com SSO ligado aquela tela devolve para o
   // auth, que ainda tem o cookie de `.avilaops.com`, e a pessoa volta para a
   // caixa sem digitar nada. Quem termina o logout e a rota abaixo, que derruba

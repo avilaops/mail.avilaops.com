@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { api } from "@/lib/cliente";
 import { CampoSenha } from "./CampoSenha";
 import { Marca } from "./Marca";
+import { destinoMail } from "@/lib/destinoMail";
 
 
 /**
@@ -13,7 +14,7 @@ import { Marca } from "./Marca";
  * estamos substituindo. A sessão já prova a posse da caixa; a API só aceita
  * `/me/first-password` enquanto a marca de primeira troca estiver de pé.
  */
-export function DefinirSenha() {
+export function DefinirSenha({ destino = "/caixa" }: { destino?: string }) {
   const [senha, setSenha] = useState("");
   const [confirma, setConfirma] = useState("");
   const [erro, setErro] = useState<string | null>(null);
@@ -28,7 +29,7 @@ export function DefinirSenha() {
     setEnviando(true);
     try {
       await api("/me/first-password", { method: "POST", body: { newPassword: senha } });
-      window.location.href = "/caixa";
+      window.location.href = destinoMail(destino);
     } catch (falha) {
       setErro(falha instanceof Error ? falha.message : "Não foi possível salvar a senha.");
       setEnviando(false);

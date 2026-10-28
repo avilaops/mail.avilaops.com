@@ -127,6 +127,8 @@ model Mailbox {
   /// da colecao; o valor corrente e o ctag/sync-token que o cliente guarda.
   davContactsSeq    BigInt @default(0) @map("dav_contacts_seq")
   davCalendarSeq    BigInt @default(0) @map("dav_calendar_seq")
+  /// Cursor de chegada serializado pelo lock transacional desta caixa.
+  messageEventSeq BigInt @default(0) @map("message_event_seq")
   /// Tokens anteriores a estes pisos perderam lapides e precisam refazer o sync inicial.
   davContactsMinSeq BigInt @default(0) @map("dav_contacts_min_seq")
   davCalendarMinSeq BigInt @default(0) @map("dav_calendar_min_seq")
@@ -197,6 +199,8 @@ model MailboxRule {
 model MailPushSubscription {
   id        String @id @default(cuid())
   mailboxId String @map("mailbox_id")
+  /// Autorizacao do aparelho; inscricao antiga exige confirmacao no webmail.
+  familyId String? @map("family_id")
 
   endpoint String @unique @db.Text
   p256dh   String
@@ -208,8 +212,10 @@ model MailPushSubscription {
   createdAt  DateTime  @default(now()) @map("created_at")
 
   mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  family MailSession? @relation(fields: [familyId], references: [id], onDelete: Cascade)
 
   @@index([mailboxId])
+  @@index([familyId])
   @@map("mail_push_subscriptions")
 }
 
@@ -297,9 +303,22 @@ model MailApiKey {
 model MailSession {
   id        String @id @default(cuid())
   mailboxId String @map("mailbox_id")
+  /// A origem antiga era indistinguivel; exige login unico apos a migracao.
+  authSource String @default("legacy") @map("auth_source")
 
   /// SHA-256 do refresh token. O valor em claro so existe no cliente.
   refreshHash String @unique @map("refresh_hash")
+  /// Raiz do aparelho; conserva revogacao mesmo apos a rotacao.
+  familyId String? @map("family_id")
+  /// Preferencia do aparelho vive na raiz, sobrevivendo somente a rotacoes.
+  notificationsEnabled Boolean @default(false) @map("notifications_enabled")
+  /// Sucessor cifrado, reapresentavel por 10s para requests concorrentes.
+  replacementRefresh String? @map("replacement_refresh") @db.Text
+  ssoSubject String? @map("sso_subject")
+  ssoEmail String? @map("sso_email")
+  ssoIssuedAt DateTime? @map("sso_issued_at")
+  /// Cookie do emissor cifrado: somente o servidor revalida a politica atual.
+  ssoToken String? @map("sso_token") @db.Text
 
   userAgent String? @map("user_agent") @db.VarChar(300)
   ip        String? @db.VarChar(60)
@@ -313,9 +332,28 @@ model MailSession {
   createdAt  DateTime  @default(now()) @map("created_at")
 
   mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  pushSubscriptions MailPushSubscription[]
 
   @@index([mailboxId, expiresAt])
+  @@index([familyId])
+  @@index([ssoSubject])
   @@map("mail_sessions")
+}
+
+/// Corte persistente do emissor, impedindo reentrada com JWT anterior ao logout.
+model MailSsoRevocation {
+  subject String @id
+  revokedBefore DateTime @map("revoked_before")
+
+  @@map("mail_sso_revocations")
+}
+
+/// O transmissor SSF identifica mudancas de conta pelo email do Auth.
+model MailSsoEmailRevocation {
+  email String @id
+  revokedBefore DateTime @map("revoked_before")
+
+  @@map("mail_sso_email_revocations")
 }
 
 /// Tentativas de login por janela, para travar forca bruta.
@@ -490,6 +528,9 @@ model Message {
   uid Int @default(0)
 
   receivedAt DateTime  @default(now()) @map("received_at")
+  arrivalSeq BigInt @default(0) @map("arrival_seq")
+  /// Origem interna; nunca inferida de headers de remetentes externos.
+  notificationKind String @default("none") @map("notification_kind")
   /// Inicio da permanencia na lixeira, independente da data de recebimento.
   trashedAt  DateTime? @map("trashed_at")
 
@@ -503,6 +544,7 @@ model Message {
   attachments Attachment[]
 
   @@unique([folderId, uid])
+  @@index([mailboxId, arrivalSeq])
   @@index([mailboxId, folderId, receivedAt(sort: Desc)])
   @@index([mailboxId, folderId, trashedAt])
   @@index([mailboxId, seen])

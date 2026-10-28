@@ -18,13 +18,15 @@ import type { NextRequest } from "next/server";
  */
 
 const COOKIE_ACESSO = "avila_mail_at";
-const COOKIE_REFRESH = "avila_mail_rt";
+// Nome novo: um cookie legado de Path=/api/sessao nao pode sombrear o novo.
+const COOKIE_REFRESH = "avila_mail_rt_v2";
+const COOKIE_REFRESH_LEGADO = "avila_mail_rt";
 const COOKIE_CSRF = "avila_mail_csrf";
 // Marca o primeiro acesso: enquanto existe, o dono ainda nao definiu a senha.
 // A trava real e a API (409); este cookie so evita o flash de tela ao navegar.
 const COOKIE_TROCAR = "avila_mail_trocar";
 
-const CAMINHO_REFRESH = "/api/sessao";
+const CAMINHO_REFRESH = "/";
 
 function seguro(): boolean {
   return process.env.COOKIE_SECURE !== "false";
@@ -34,11 +36,15 @@ export interface TokensSessao {
   accessToken: string;
   refreshToken: string;
   expiresInSeconds: number;
+  refreshExpiresInSeconds?: number;
+  mailbox?: { mustChangePassword?: boolean };
 }
 
 export async function gravarSessao(tokens: TokensSessao, opts: { precisaTrocarSenha?: boolean } = {}): Promise<string> {
   const jar = await cookies();
-  const csrf = randomBytes(32).toString("base64url");
+  // Requests concorrentes renovam o mesmo par: manter CSRF evita invalidar
+  // uma mutacao cujo header foi montado antes de outra resposta de refresh.
+  const csrf = jar.get(COOKIE_CSRF)?.value ?? randomBytes(32).toString("base64url");
 
   const base = {
     httpOnly: true,
@@ -51,16 +57,18 @@ export async function gravarSessao(tokens: TokensSessao, opts: { precisaTrocarSe
 
   jar.set(COOKIE_ACESSO, tokens.accessToken, { ...base, maxAge: tokens.expiresInSeconds });
 
-  // O refresh so trafega na rota que o usa. Se o token de acesso vazar por
-  // algum caminho, o refresh — que vale 30 dias — nem esteve exposto.
-  jar.set(COOKIE_REFRESH, tokens.refreshToken, { ...base, path: CAMINHO_REFRESH, maxAge: 30 * 86_400 });
+  // Paginas, SSE e downloads precisam receber a prova de continuidade.
+  // Continua inacessivel ao JavaScript e restrito a este host.
+  const duracao = tokens.refreshExpiresInSeconds ?? 30 * 86_400;
+  jar.delete({ name: COOKIE_REFRESH_LEGADO, path: "/api/sessao" });
+  jar.set(COOKIE_REFRESH, tokens.refreshToken, { ...base, path: CAMINHO_REFRESH, maxAge: duracao });
 
   // Este e o unico legivel pelo JS: e a metade do duplo envio que a pagina
   // precisa copiar para o header.
-  jar.set(COOKIE_CSRF, csrf, { ...base, httpOnly: false, maxAge: 30 * 86_400 });
+  jar.set(COOKIE_CSRF, csrf, { ...base, httpOnly: false, maxAge: duracao });
 
-  if (opts.precisaTrocarSenha) {
-    jar.set(COOKIE_TROCAR, "1", { ...base, maxAge: tokens.expiresInSeconds });
+  if (opts.precisaTrocarSenha ?? tokens.mailbox?.mustChangePassword ?? jar.get(COOKIE_TROCAR)?.value === "1") {
+    jar.set(COOKIE_TROCAR, "1", { ...base, maxAge: duracao });
   } else {
     jar.delete(COOKIE_TROCAR);
   }
@@ -80,6 +88,7 @@ export async function limparSessao(): Promise<void> {
   const jar = await cookies();
   jar.delete(COOKIE_ACESSO);
   jar.delete({ name: COOKIE_REFRESH, path: CAMINHO_REFRESH });
+  jar.delete({ name: COOKIE_REFRESH_LEGADO, path: "/api/sessao" });
   jar.delete(COOKIE_CSRF);
   jar.delete(COOKIE_TROCAR);
 }
@@ -89,7 +98,8 @@ export async function tokenDeAcesso(): Promise<string | null> {
 }
 
 export async function tokenDeRefresh(): Promise<string | null> {
-  return (await cookies()).get(COOKIE_REFRESH)?.value ?? null;
+  const jar = await cookies();
+  return jar.get(COOKIE_REFRESH)?.value ?? jar.get(COOKIE_REFRESH_LEGADO)?.value ?? null;
 }
 
 export async function temSessao(): Promise<boolean> {

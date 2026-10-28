@@ -6,7 +6,7 @@ import { temSessao } from "@/lib/sessao";
 export const dynamic = "force-dynamic";
 
 export default async function Admin() {
-  if (!(await temSessao())) redirect("/entrar");
+  if (!(await temSessao())) redirect("/api/sessao/retomar?returnTo=/admin");
 
   return <PainelAdmin />;
 }

@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import { destinoMail } from "./destinoMail";
 
 /**
  * Integracao com o login unico (auth.avilaops.com).
@@ -24,8 +25,10 @@ export function webmailBase(): string {
 }
 
 /** URL da tela do auth que volta para a rota de ingestao daqui. */
-export function urlLoginSso(): string {
-  const q = new URLSearchParams({ app: "mail", returnTo: `${webmailBase()}/api/sessao/sso` });
+export function urlLoginSso(destino = "/caixa"): string {
+  const callback = new URL(`${webmailBase()}/api/sessao/sso`);
+  if (destinoMail(destino) !== "/caixa") callback.searchParams.set("returnTo", destinoMail(destino));
+  const q = new URLSearchParams({ app: "mail", returnTo: callback.href });
   return `${authBase()}/login?${q}`;
 }
 
