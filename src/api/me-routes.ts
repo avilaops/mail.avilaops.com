@@ -43,6 +43,7 @@ import { createRule, deleteRule, listRules, updateRule } from "../services/rules
 import { autenticarChave, criarChave, ehAdministrador, escopoDoToken, listarChaves, revogarChave, type ApiKeyScope } from "../services/apiKeys.js";
 import { handleAdminRoute } from "./admin-routes.js";
 import { chavePublica, listarInscricoes, pushDisponivel, registrarInscricao, removerInscricao } from "../services/push.js";
+import { receberLogoutSso } from "../services/ssoRevocation.js";
 import { getCalendarSettings, getSettings, updateCalendarSettings, updateProfile, updateSettings } from "../services/settings.js";
 import { listSendAs, searchContacts } from "../services/contacts.js";
 import { deleteUpload, listUploads, storeUpload } from "../services/uploads.js";
@@ -80,7 +81,7 @@ const refreshSchema = z.object({ refreshToken: z.string().min(10) });
 const firstPasswordSchema = z.object({ newPassword: z.string().min(12).max(500) });
 
 const ssoSchema = z.object({
-  ssoToken: z.string().min(20),
+  ssoToken: z.string().min(20).max(8192),
   address: z.string().min(3).optional(),
 });
 
@@ -410,11 +411,15 @@ async function autenticar(req: IncomingMessage, path = ""): Promise<Sessao> {
 
   const sessao = await prisma.mailSession.findFirst({
     where: { id: payload.sid, mailboxId: payload.sub, revokedAt: null, expiresAt: { gt: new Date() } },
-    select: { id: true, mailbox: { select: { status: true, mustChangePassword: true } } },
+    select: { id: true, ssoEmail: true, mailbox: { select: { status: true, mustChangePassword: true, ownerEmail: true, localPart: true, domain: { select: { name: true } } } } },
   });
 
   if (!sessao) throw new AuthError("Sessao encerrada. Faca login novamente.");
   if (sessao.mailbox.status !== "active") throw new AuthError("Caixa indisponivel no momento.", 403);
+  if (sessao.ssoEmail && sessao.mailbox.ownerEmail !== sessao.ssoEmail &&
+      `${sessao.mailbox.localPart}@${sessao.mailbox.domain.name}` !== sessao.ssoEmail) {
+    throw new AuthError("Esta caixa nao pertence mais a sua conta.", 403);
+  }
 
   void prisma.mailSession
     .update({ where: { id: sessao.id }, data: { lastUsedAt: new Date() } })
@@ -456,6 +461,12 @@ export async function handleUserRoute(
   }
 
   // Login pelo SSO (auth.avilaops.com): o webmail repassa o cookie avila_sso.
+  if (path === "/v1/auth/sso/logout" && method === "POST") {
+    const input = z.object({ logoutToken: z.string().min(20).max(8192) }).parse(await readBody(req));
+    json(res, 200, await receberLogoutSso(input.logoutToken));
+    return true;
+  }
+
   if (path === "/v1/auth/sso" && method === "POST") {
     const input = ssoSchema.parse(await readBody(req));
     json(res, 200, await loginSso({ ...input, ip: clientIp(req), userAgent: userAgent(req) }));

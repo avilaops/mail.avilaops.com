@@ -67,7 +67,7 @@ export async function api<T>(
         : "Erro na requisicao.";
 
     // Sessao morreu enquanto a aba estava aberta: recarregar cai no login.
-    if (resposta.status === 401) window.location.href = "/entrar";
+    if (resposta.status === 401 || resposta.status === 428) window.location.href = "/entrar";
 
     // Primeiro acesso: a API recusa tudo (409) ate a senha ser definida. So a
     // propria chamada de definir a senha escapa, senao seria um laco.

@@ -1,5 +1,4 @@
 import { createHash, randomBytes } from "node:crypto";
-import jwt from "jsonwebtoken";
 import { Prisma } from "@prisma/client";
 import { config } from "../lib/config.js";
 import { prisma } from "../lib/db.js";
@@ -12,6 +11,10 @@ import { decryptSecret, encryptSecret } from "../lib/crypto.js";
 import { localizarIp } from "../lib/geoip.js";
 import { descreverAparelho } from "../lib/userAgent.js";
 import { alertarAcessoNovo, alertarMudanca } from "./alertas.js";
+import { AuthError } from "./authError.js";
+import { conferirPoliticaSso, identidadeSso, type IdentidadeSso } from "./ssoContract.js";
+import { conferirRevogacaoSso } from "./ssoRevocation.js";
+export { AuthError } from "./authError.js";
 import {
   gerarCodigosDeRecuperacao,
   gerarSegredoTotp,
@@ -23,16 +26,6 @@ const log = createLogger("session");
 
 /** Janela do contador de tentativas de login. */
 const LOGIN_WINDOW_MINUTES = 15;
-
-export class AuthError extends Error {
-  constructor(
-    message: string,
-    readonly statusCode = 401,
-  ) {
-    super(message);
-    this.name = "AuthError";
-  }
-}
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -118,21 +111,29 @@ export interface SessionTokens {
 
 async function emitirSessao(
   mailbox: { id: string; localPart: string; displayName: string | null; quotaBytes: bigint; usedBytes: bigint; mustChangePassword?: boolean; domain: { name: string } },
-  contexto: { ip?: string; userAgent?: string },
+  contexto: { ip?: string; userAgent?: string; sso?: IdentidadeSso & { token: string } },
 ): Promise<SessionTokens> {
   const refreshToken = randomBytes(48).toString("base64url");
-  const expiresAt = new Date(Date.now() + config.session.refreshTokenDays * 86_400_000);
+  const expiresAt = new Date(Math.min(Date.now() + config.session.refreshTokenDays * 86_400_000,
+    contexto.sso?.expiresAt.getTime() ?? Infinity));
 
-  const sessao = await prisma.mailSession.create({
-    data: {
+  const dados = {
       mailboxId: mailbox.id,
       refreshHash: hashToken(refreshToken),
       ip: contexto.ip?.slice(0, 60) ?? null,
       userAgent: contexto.userAgent?.slice(0, 300) ?? null,
       expiresAt,
-    },
-    select: { id: true },
-  });
+      ssoSubject: contexto.sso?.subject ?? null,
+      ssoEmail: contexto.sso?.email ?? null,
+      ssoIssuedAt: contexto.sso?.issuedAt ?? null,
+      ssoToken: contexto.sso ? encryptSecret(contexto.sso.token) : null,
+  };
+  const sessao = contexto.sso
+    ? await prisma.$transaction(async (tx) => {
+        await conferirRevogacaoSso(tx, contexto.sso!.subject, contexto.sso!.issuedAt);
+        return tx.mailSession.create({ data: dados, select: { id: true } });
+      })
+    : await prisma.mailSession.create({ data: dados, select: { id: true } });
 
   // Localizacao em segundo plano: o login nao espera um servico de terceiro,
   // e a tela mostra a cidade assim que a consulta volta (segundos depois).
@@ -158,7 +159,7 @@ async function emitirSessao(
   return {
     accessToken: signAccessToken({ sub: mailbox.id, adr: address, sid: sessao.id }),
     refreshToken,
-    expiresInSeconds: config.session.accessTokenMinutes * 60,
+    expiresInSeconds: Math.min(config.session.accessTokenMinutes * 60, Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000))),
     refreshExpiresInSeconds: Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000)),
     mailbox: {
       id: mailbox.id,
@@ -457,8 +458,12 @@ export async function refresh(input: {
 
   const resultado = await prisma.$transaction(async (tx) => {
     // Mesma ordem de locks para rotacao, replay e revogacao de aparelhos.
-    const referencia = await tx.mailSession.findUnique({ where: { refreshHash: hash }, select: { mailboxId: true } });
+    const referencia = await tx.mailSession.findUnique({ where: { refreshHash: hash }, select: { mailboxId: true, ssoSubject: true, ssoIssuedAt: true } });
     if (!referencia) return { erro: "Sessao invalida. Faca login novamente.", status: 401 };
+    if (referencia.ssoSubject) {
+      if (!referencia.ssoIssuedAt) return { erro: "Sessao invalida. Faca login novamente.", status: 401 };
+      await conferirRevogacaoSso(tx, referencia.ssoSubject, referencia.ssoIssuedAt);
+    }
     await tx.$queryRaw`SELECT id FROM mail_mailboxes WHERE id = ${referencia.mailboxId} FOR UPDATE`;
     const sessao = await tx.mailSession.findUnique({
       where: { refreshHash: hash },
@@ -472,6 +477,10 @@ export async function refresh(input: {
         location: true,
         revokedAt: true,
         expiresAt: true,
+        ssoSubject: true,
+        ssoEmail: true,
+        ssoIssuedAt: true,
+        ssoToken: true,
         mailbox: {
           select: {
             id: true,
@@ -481,6 +490,7 @@ export async function refresh(input: {
             quotaBytes: true,
             usedBytes: true,
             mustChangePassword: true,
+            ownerEmail: true,
             domain: { select: { name: true } },
           },
         },
@@ -535,6 +545,15 @@ export async function refresh(input: {
       return { erro: "Sessao invalida. Faca login novamente.", status: 401 };
     }
 
+    if (sessao.ssoToken) {
+      const token = decryptSecret(sessao.ssoToken);
+      const identidade = identidadeSso(token);
+      if (identidade.subject !== sessao.ssoSubject || identidade.email !== sessao.ssoEmail ||
+          (sessao.mailbox.ownerEmail !== identidade.email && `${sessao.mailbox.localPart}@${sessao.mailbox.domain.name}` !== identidade.email)) {
+        throw new AuthError("Esta caixa nao pertence mais a sua conta.", 403);
+      }
+      await conferirPoliticaSso(token);
+    }
     const token = randomBytes(48).toString("base64url");
     const sucessora = await tx.mailSession.create({ data: {
       mailboxId: sessao.mailboxId,
@@ -544,6 +563,10 @@ export async function refresh(input: {
       ip: input.ip?.slice(0, 60) ?? sessao.ip,
       userAgent: input.userAgent?.slice(0, 300) ?? sessao.userAgent,
       location: input.ip && input.ip !== sessao.ip ? null : sessao.location,
+      ssoSubject: sessao.ssoSubject,
+      ssoEmail: sessao.ssoEmail,
+      ssoIssuedAt: sessao.ssoIssuedAt,
+      ssoToken: sessao.ssoToken,
     }, select: { id: true } });
     await tx.mailSession.update({ where: { id: sessao.id }, data: {
       revokedAt: agora, replacementRefresh: encryptSecret(token),
@@ -706,17 +729,10 @@ export async function loginSso(input: {
   ip?: string;
   userAgent?: string;
 }): Promise<SsoLoginResult> {
-  const segredo = process.env.SSO_JWT_SECRET ?? "";
-  if (segredo.length < 32) throw new AuthError("Login pelo SSO nao esta habilitado.", 503);
-
-  let email: string;
-  try {
-    const decoded = jwt.verify(input.ssoToken, segredo, { algorithms: ["HS256"], issuer: "auth.avilaops.com" });
-    if (typeof decoded === "string" || typeof decoded.email !== "string") throw new Error("sem email");
-    email = decoded.email.toLowerCase();
-  } catch {
-    throw new AuthError("Sessao do SSO invalida ou expirada.");
-  }
+  const identidade = identidadeSso(input.ssoToken);
+  await prisma.$transaction((tx) => conferirRevogacaoSso(tx, identidade.subject, identidade.issuedAt));
+  await conferirPoliticaSso(input.ssoToken);
+  const email = identidade.email;
 
   const parsed = parseAddress(email);
   const caixas = await prisma.mailbox.findMany({
@@ -761,7 +777,7 @@ export async function loginSso(input: {
 
   await prisma.mailbox.update({ where: { id: escolhida.id }, data: { lastLoginAt: new Date() } });
   log.info("login via SSO", { mailboxId: escolhida.id, owner: email, ip: input.ip });
-  return emitirSessao(escolhida, { ip: input.ip, userAgent: input.userAgent });
+  return emitirSessao(escolhida, { ip: input.ip, userAgent: input.userAgent, sso: { ...identidade, token: input.ssoToken } });
 }
 
 

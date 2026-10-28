@@ -304,6 +304,11 @@ model MailSession {
   familyId String? @map("family_id")
   /// Sucessor cifrado, reapresentavel por 10s para requests concorrentes.
   replacementRefresh String? @map("replacement_refresh") @db.Text
+  ssoSubject String? @map("sso_subject")
+  ssoEmail String? @map("sso_email")
+  ssoIssuedAt DateTime? @map("sso_issued_at")
+  /// Cookie do emissor cifrado: somente o servidor revalida a politica atual.
+  ssoToken String? @map("sso_token") @db.Text
 
   userAgent String? @map("user_agent") @db.VarChar(300)
   ip        String? @db.VarChar(60)
@@ -320,7 +325,16 @@ model MailSession {
 
   @@index([mailboxId, expiresAt])
   @@index([familyId])
+  @@index([ssoSubject])
   @@map("mail_sessions")
+}
+
+/// Corte persistente do emissor, impedindo reentrada com JWT anterior ao logout.
+model MailSsoRevocation {
+  subject String @id
+  revokedBefore DateTime @map("revoked_before")
+
+  @@map("mail_sso_revocations")
 }
 
 /// Tentativas de login por janela, para travar forca bruta.
