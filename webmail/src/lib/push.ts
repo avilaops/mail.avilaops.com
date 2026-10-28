@@ -18,6 +18,7 @@ export interface AparelhoPush {
 }
 
 export interface EstadoPush {
+  habilitadoAqui: boolean;
   disponivel: boolean;
   chavePublica: string | null;
   aparelhos: AparelhoPush[];
@@ -71,6 +72,7 @@ export async function desinscrever(): Promise<string | null> {
   const inscricao = await inscricaoAtual();
   if (!inscricao) return null;
   const endpoint = inscricao.endpoint;
-  await inscricao.unsubscribe().catch(() => undefined);
+  const removida = await inscricao.unsubscribe();
+  if (!removida) throw new Error("O navegador não confirmou a remoção do aviso em segundo plano.");
   return endpoint;
 }

@@ -2971,6 +2971,15 @@ await (async () => {
   await logoutAll(mailboxPush);
   check("logout global elimina inclusive inscricoes expiradas", await prisma.mailPushSubscription.count({ where: { mailboxId: mailboxPush } }) === 0);
   check("token de sessao revogada nao reinscreve aparelho", (await registrar(rotacionada.accessToken, endpointA)).status === 401);
+  const caixaOutraPush = await createMailbox({ domain: "brilhax.com.br", username: "pushoutra", password: "OutraSenhaPush123", mustChangePassword: false });
+  try {
+    const outraConta = await login({ address: "pushoutra@brilhax.com.br", password: "OutraSenhaPush123" });
+    check("mesmo navegador pode ser autorizado em outra conta", (await registrar(outraConta.accessToken, endpointA)).status === 201);
+    await logoutAll(mailboxPush);
+    check("logout da conta anterior preserva inscricao do novo dono", (await listarInscricoes(caixaOutraPush.id)).some((item) => item.endpoint === endpointA));
+  } finally {
+    await prisma.mailbox.delete({ where: { id: caixaOutraPush.id } });
+  }
   await prisma.mailboxSettings.upsert({ where: { mailboxId: mailboxPush }, create: { mailboxId: mailboxPush, notifyEnabled: false }, update: { notifyEnabled: false } });
   check("preferencia desligada cala mensagem", !await avisoPermitido(mailboxPush, { titulo: "Teste", corpo: "Teste" }));
   check("alerta de seguranca ignora silencio da caixa", await avisoPermitido(mailboxPush, { titulo: "Teste", corpo: "Teste", tipo: "seguranca" }));

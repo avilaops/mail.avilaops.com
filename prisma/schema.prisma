@@ -197,6 +197,8 @@ model MailboxRule {
 model MailPushSubscription {
   id        String @id @default(cuid())
   mailboxId String @map("mailbox_id")
+  /// Autorizacao do aparelho; inscricao antiga exige confirmacao no webmail.
+  familyId String? @map("family_id")
 
   endpoint String @unique @db.Text
   p256dh   String
@@ -208,8 +210,10 @@ model MailPushSubscription {
   createdAt  DateTime  @default(now()) @map("created_at")
 
   mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  family MailSession? @relation(fields: [familyId], references: [id], onDelete: Cascade)
 
   @@index([mailboxId])
+  @@index([familyId])
   @@map("mail_push_subscriptions")
 }
 
@@ -304,6 +308,8 @@ model MailSession {
   refreshHash String @unique @map("refresh_hash")
   /// Raiz do aparelho; conserva revogacao mesmo apos a rotacao.
   familyId String? @map("family_id")
+  /// Preferencia do aparelho vive na raiz, sobrevivendo somente a rotacoes.
+  notificationsEnabled Boolean @default(false) @map("notifications_enabled")
   /// Sucessor cifrado, reapresentavel por 10s para requests concorrentes.
   replacementRefresh String? @map("replacement_refresh") @db.Text
   ssoSubject String? @map("sso_subject")
@@ -324,6 +330,7 @@ model MailSession {
   createdAt  DateTime  @default(now()) @map("created_at")
 
   mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
+  pushSubscriptions MailPushSubscription[]
 
   @@index([mailboxId, expiresAt])
   @@index([familyId])

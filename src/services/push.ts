@@ -2,6 +2,8 @@ import webpush from "web-push";
 import { config } from "../lib/config.js";
 import { prisma } from "../lib/db.js";
 import { createLogger } from "../lib/logger.js";
+import { AuthError } from "./authError.js";
+import type { Prisma } from "@prisma/client";
 
 const log = createLogger("push");
 
@@ -43,6 +45,50 @@ export interface Inscricao {
   keys: { p256dh: string; auth: string };
 }
 
+async function sessaoDoAparelho(tx: Prisma.TransactionClient, mailboxId: string, sessionId: string) {
+  const sessao = await tx.mailSession.findFirst({
+    where: { id: sessionId, mailboxId, revokedAt: null, expiresAt: { gt: new Date() }, authSource: { not: "legacy" } },
+    select: { id: true, familyId: true },
+  });
+  if (!sessao) throw new AuthError("Sessao do aparelho encerrada.");
+  return sessao.familyId ?? sessao.id;
+}
+
+export async function avisosHabilitadosAqui(mailboxId: string, sessionId: string): Promise<boolean> {
+  const sessao = await prisma.mailSession.findFirst({
+    where: { id: sessionId, mailboxId, revokedAt: null, expiresAt: { gt: new Date() }, authSource: { not: "legacy" } },
+    select: { id: true, familyId: true },
+  });
+  if (!sessao) return false;
+  return Boolean((await prisma.mailSession.findUnique({ where: { id: sessao.familyId ?? sessao.id },
+    select: { notificationsEnabled: true } }))?.notificationsEnabled);
+}
+
+export async function habilitarAvisosAqui(mailboxId: string, sessionId: string, enabled: boolean): Promise<{ ok: true }> {
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM mail_mailboxes WHERE id = ${mailboxId} FOR UPDATE`;
+    const familyId = await sessaoDoAparelho(tx, mailboxId, sessionId);
+    await tx.mailSession.update({ where: { id: familyId }, data: { notificationsEnabled: enabled } });
+    if (!enabled) await tx.mailPushSubscription.deleteMany({ where: { mailboxId, familyId } });
+  });
+  return { ok: true };
+}
+
+/** Filtra inclusive expiracao, suspensao e transferencia de dono antes de enviar. */
+async function familiasAtivas(mailboxId: string): Promise<string[]> {
+  const caixa = await prisma.mailbox.findUnique({ where: { id: mailboxId },
+    select: { status: true, ownerEmail: true, localPart: true, domain: { select: { name: true } } } });
+  if (!caixa || caixa.status !== "active") return [];
+  const emails = [caixa.ownerEmail, `${caixa.localPart}@${caixa.domain.name}`].filter((email): email is string => Boolean(email));
+  const sessoes = await prisma.mailSession.findMany({
+    where: { mailboxId, revokedAt: null, expiresAt: { gt: new Date() },
+      OR: [{ authSource: "password" }, { authSource: "sso", ssoEmail: { in: emails } }] },
+    select: { id: true, familyId: true },
+  });
+  const raizes = [...new Set(sessoes.map((sessao) => sessao.familyId ?? sessao.id))];
+  return (await prisma.mailSession.findMany({ where: { id: { in: raizes }, notificationsEnabled: true }, select: { id: true } })).map((sessao) => sessao.id);
+}
+
 /**
  * Guarda (ou atualiza) a inscricao do navegador.
  *
@@ -54,36 +100,49 @@ export async function registrarInscricao(
   mailboxId: string,
   inscricao: Inscricao,
   userAgent?: string,
+  sessionId?: string,
 ): Promise<{ ok: true }> {
-  await prisma.mailPushSubscription.upsert({
-    where: { endpoint: inscricao.endpoint },
-    create: {
-      mailboxId,
-      endpoint: inscricao.endpoint,
-      p256dh: inscricao.keys.p256dh,
-      auth: inscricao.keys.auth,
-      userAgent: userAgent?.slice(0, 300) ?? null,
-    },
-    update: {
-      // Endereco reaproveitado por outra caixa (mesmo navegador, outro login)
-      // passa a pertencer a quem acabou de autorizar.
-      mailboxId,
-      p256dh: inscricao.keys.p256dh,
-      auth: inscricao.keys.auth,
-      userAgent: userAgent?.slice(0, 300) ?? null,
-    },
+  if (!sessionId) throw new AuthError("Entre no webmail para autorizar este aparelho.", 403);
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM mail_mailboxes WHERE id = ${mailboxId} FOR UPDATE`;
+    const familyId = await sessaoDoAparelho(tx, mailboxId, sessionId);
+    await tx.mailSession.update({ where: { id: familyId }, data: { notificationsEnabled: true } });
+    await tx.mailPushSubscription.upsert({
+      where: { endpoint: inscricao.endpoint },
+      create: {
+        mailboxId,
+        familyId,
+        endpoint: inscricao.endpoint,
+        p256dh: inscricao.keys.p256dh,
+        auth: inscricao.keys.auth,
+        userAgent: userAgent?.slice(0, 300) ?? null,
+      },
+      update: {
+        // O mesmo navegador passa a pertencer a quem acabou de autorizar.
+        mailboxId,
+        familyId,
+        p256dh: inscricao.keys.p256dh,
+        auth: inscricao.keys.auth,
+        userAgent: userAgent?.slice(0, 300) ?? null,
+      },
+    });
   });
   return { ok: true };
 }
 
 export async function removerInscricao(mailboxId: string, endpoint: string): Promise<{ ok: true }> {
-  await prisma.mailPushSubscription.deleteMany({ where: { mailboxId, endpoint } });
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM mail_mailboxes WHERE id = ${mailboxId} FOR UPDATE`;
+    const inscricao = await tx.mailPushSubscription.findFirst({ where: { mailboxId, endpoint } });
+    if (inscricao?.familyId) await tx.mailSession.update({ where: { id: inscricao.familyId }, data: { notificationsEnabled: false } });
+    await tx.mailPushSubscription.deleteMany({ where: { mailboxId, endpoint } });
+  });
   return { ok: true };
 }
 
 export async function listarInscricoes(mailboxId: string) {
   return prisma.mailPushSubscription.findMany({
-    where: { mailboxId },
+    where: { mailboxId, familyId: { in: await familiasAtivas(mailboxId) } },
     orderBy: { createdAt: "desc" },
     select: { id: true, endpoint: true, userAgent: true, lastSentAt: true, createdAt: true },
   });
@@ -131,7 +190,7 @@ export async function avisoPermitido(mailboxId: string, aviso: AvisoPush, agora 
   if (aviso.tipo === "seguranca") return true;
 
   const prefs = await prisma.mailboxSettings.findUnique({
-    where: { mailboxId },
+    where: { mailboxId, familyId: { in: await familiasAtivas(mailboxId) } },
     select: { notifyEnabled: true, notifyQuietStart: true, notifyQuietEnd: true, notifyOnlyInbox: true },
   });
   if (!prefs) return true;

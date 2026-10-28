@@ -68,7 +68,8 @@ export function AvisosDeMensagem() {
     ]);
     setEstado(dados);
     setPrefs(preferencias);
-    setInscritoAqui(Boolean(await inscricaoAtual()));
+    const local = await inscricaoAtual();
+    setInscritoAqui(Boolean(dados.disponivel && dados.chavePublica && dados.habilitadoAqui && local && dados.aparelhos.some((aparelho) => aparelho.endpoint === local.endpoint)));
   }, []);
 
   /** Salva na hora: preferência de aviso com botão "Salvar" é esquecida ligada. */
@@ -98,15 +99,17 @@ export function AvisosDeMensagem() {
       setPermissao(resposta);
       if (resposta !== "concedida") return;
 
-      if (estado?.disponivel && estado.chavePublica) {
+      if (suportaPush() && estado?.disponivel && estado.chavePublica) {
         const inscricao = await inscrever(estado.chavePublica);
         const bruta = inscricao.toJSON() as { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
         await api("/me/push", {
           method: "POST",
           body: { endpoint: bruta.endpoint, keys: { p256dh: bruta.keys?.p256dh, auth: bruta.keys?.auth } },
         });
-        await carregar();
+      } else {
+        await api("/me/push", { method: "PUT", body: { enabled: true } });
       }
+      await carregar();
     } catch (falha) {
       setErro(falha instanceof Error ? falha.message : "Não foi possível ligar os avisos.");
     } finally {
@@ -118,8 +121,11 @@ export function AvisosDeMensagem() {
     setErro(null);
     setOcupado(true);
     try {
-      const endpoint = await desinscrever();
-      if (endpoint) await api("/me/push", { method: "DELETE", body: { endpoint } });
+      // O servidor cala ambos os canais antes de remover a inscricao local.
+      // Falha no navegador nao pode manter o servidor enviando avisos.
+      await api("/me/push", { method: "PUT", body: { enabled: false } });
+      await carregar();
+      await desinscrever();
       await carregar();
     } catch (falha) {
       setErro(falha instanceof Error ? falha.message : "Não foi possível desligar.");
@@ -128,7 +134,8 @@ export function AvisosDeMensagem() {
     }
   }
 
-  const semSuporte = !suportaPush();
+  const semSuporte = permissao === "indisponivel";
+  const habilitadoAqui = Boolean(estado?.habilitadoAqui && permissao === "concedida");
 
   return (
     <div className="space-y-4">
@@ -145,15 +152,17 @@ export function AvisosDeMensagem() {
             <p className="mt-0.5 text-xs text-[var(--color-texto-fraco)]">
               {inscritoAqui && permissao === "concedida"
                 ? "Ligado: você recebe o aviso mesmo com o webmail fechado."
+                : habilitadoAqui
+                  ? "Ligado com o webmail aberto. O aviso em segundo plano ainda não foi confirmado neste aparelho."
                 : permissao === "negada"
                   ? "O navegador está bloqueando avisos deste site. Libere nas permissões do cadeado, ao lado do endereço, e volte aqui."
                   : semSuporte
-                    ? "Este navegador não suporta avisos em segundo plano."
+                    ? "Este navegador não suporta avisos do sistema."
                     : "Aviso do sistema quando chegar mensagem — inclusive com a aba fechada."}
             </p>
           </div>
 
-          {inscritoAqui && permissao === "concedida" ? (
+          {habilitadoAqui ? (
             <button type="button" onClick={() => void desligarNesteAparelho()} disabled={ocupado} className={BOTAO_LEVE}>
               {ocupado ? "…" : "Desligar aqui"}
             </button>
@@ -161,7 +170,7 @@ export function AvisosDeMensagem() {
             <button
               type="button"
               onClick={() => void ligarNesteAparelho()}
-              disabled={ocupado || semSuporte || permissao === "negada"}
+              disabled={ocupado || !estado || semSuporte || permissao === "negada"}
               className={BOTAO}
             >
               {ocupado ? "Ligando…" : "Ligar avisos"}
@@ -172,7 +181,7 @@ export function AvisosDeMensagem() {
         {estado && !estado.disponivel && (
           <p className="mt-2 text-xs text-[var(--color-atencao)]">
             O aviso com a aba fechada ainda não está ligado no servidor. Com a aba aberta, o contador no título e o
-            balão do sistema já funcionam.
+            balão do sistema funcionam depois de você autorizar este aparelho.
           </p>
         )}
       </div>
@@ -274,8 +283,11 @@ export function AvisosDeMensagem() {
                     void (async () => {
                       setOcupado(true);
                       try {
+                        setErro(null);
                         await api("/me/push", { method: "DELETE", body: { endpoint: aparelho.endpoint } });
                         await carregar();
+                      } catch (falha) {
+                        setErro(falha instanceof Error ? falha.message : "Não foi possível remover o aparelho.");
                       } finally {
                         setOcupado(false);
                       }

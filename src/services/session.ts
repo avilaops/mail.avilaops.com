@@ -537,6 +537,8 @@ export async function refresh(input: {
         where: { mailboxId: sessao.mailboxId, replacementRefresh: { not: null } },
         data: { replacementRefresh: null },
       });
+      await tx.mailPushSubscription.deleteMany({ where: { mailboxId: sessao.mailboxId } });
+      await tx.mailSession.updateMany({ where: { mailboxId: sessao.mailboxId, notificationsEnabled: true }, data: { notificationsEnabled: false } });
       await tx.mailEvent.create({
         data: {
           mailboxId: sessao.mailboxId,
@@ -591,8 +593,9 @@ export async function logout(refreshToken: string): Promise<void> {
     const raiz = sessao.familyId ?? sessao.id;
     await tx.mailSession.updateMany({
       where: { mailboxId: sessao.mailboxId, OR: [{ id: raiz }, { familyId: raiz }] },
-      data: { revokedAt: new Date(), replacementRefresh: null },
+      data: { revokedAt: new Date(), replacementRefresh: null, notificationsEnabled: false },
     });
+    await tx.mailPushSubscription.deleteMany({ where: { mailboxId: sessao.mailboxId, familyId: raiz } });
   });
 }
 
@@ -607,6 +610,8 @@ export async function logoutAll(mailboxId: string): Promise<{ revoked: number }>
       where: { mailboxId, replacementRefresh: { not: null } },
       data: { replacementRefresh: null },
     });
+    await tx.mailPushSubscription.deleteMany({ where: { mailboxId } });
+    await tx.mailSession.updateMany({ where: { mailboxId, notificationsEnabled: true }, data: { notificationsEnabled: false } });
     return revogadas;
   });
   return { revoked: resultado.count };
@@ -630,8 +635,9 @@ async function logoutByFamily(mailboxId: string, familyId: string): Promise<void
     await tx.$queryRaw`SELECT id FROM mail_mailboxes WHERE id = ${mailboxId} FOR UPDATE`;
     await tx.mailSession.updateMany({
       where: { mailboxId, OR: [{ id: familyId }, { familyId }] },
-      data: { revokedAt: new Date(), replacementRefresh: null },
+      data: { revokedAt: new Date(), replacementRefresh: null, notificationsEnabled: false },
     });
+    await tx.mailPushSubscription.deleteMany({ where: { mailboxId, familyId } });
   });
 }
 

@@ -54,7 +54,9 @@ export interface MensagemParaAviso {
  * Varias mensagens de uma vez viram UM aviso agrupado — dez baloes em
  * sequencia sao o caminho mais rapido para a pessoa desligar a permissao.
  */
-export function avisarSistema(mensagens: MensagemParaAviso[], aoClicar: (id: string) => void): void {
+export function avisarSistema(mensagens: MensagemParaAviso[], aoClicar: (id: string) => void, permitido = false): void {
+  // Decisao atual do servidor: preferencia da caixa e autorizacao do aparelho.
+  if (!permitido) return;
   if (mensagens.length === 0) return;
   if (estadoDaPermissao() !== "concedida") return;
   if (typeof document !== "undefined" && document.visibilityState === "visible") return;

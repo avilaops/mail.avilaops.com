@@ -84,10 +84,14 @@ export async function receberSinalSso(token: string): Promise<{ ok: true; revoke
     await tx.$executeRaw`INSERT INTO mail_sso_email_revocations (email, revoked_before) VALUES (${email}, ${corte})
       ON CONFLICT (email) DO UPDATE SET revoked_before = GREATEST(mail_sso_email_revocations.revoked_before, EXCLUDED.revoked_before)`;
     const atual = await tx.mailSsoEmailRevocation.findUniqueOrThrow({ where: { email } });
+    await tx.$queryRaw`SELECT id FROM mail_mailboxes WHERE id IN
+      (SELECT mailbox_id FROM mail_sessions WHERE auth_source = 'sso' AND sso_email = ${email} AND sso_issued_at <= ${atual.revokedBefore})
+      ORDER BY id FOR UPDATE`;
     const resultado = await tx.mailSession.updateMany({ where: { authSource: "sso", ssoEmail: email,
       ssoIssuedAt: { lte: atual.revokedBefore }, revokedAt: null }, data: { revokedAt: new Date(), replacementRefresh: null } });
     await tx.mailSession.updateMany({ where: { authSource: "sso", ssoEmail: email, ssoIssuedAt: { lte: atual.revokedBefore } },
-      data: { replacementRefresh: null } });
+      data: { replacementRefresh: null, notificationsEnabled: false } });
+    await tx.mailPushSubscription.deleteMany({ where: { family: { authSource: "sso", ssoEmail: email, ssoIssuedAt: { lte: atual.revokedBefore } } } });
     return resultado.count;
   });
   return { ok: true, revoked };
@@ -120,12 +124,16 @@ export async function receberLogoutSso(token: string): Promise<{ ok: true; revok
     await tx.$executeRaw`INSERT INTO mail_sso_revocations (subject, revoked_before) VALUES (${subject}, ${corte})
       ON CONFLICT (subject) DO UPDATE SET revoked_before = GREATEST(mail_sso_revocations.revoked_before, EXCLUDED.revoked_before)`;
     const corteAtual = await tx.mailSsoRevocation.findUniqueOrThrow({ where: { subject } });
+    await tx.$queryRaw`SELECT id FROM mail_mailboxes WHERE id IN
+      (SELECT mailbox_id FROM mail_sessions WHERE sso_subject = ${subject} AND sso_issued_at <= ${corteAtual.revokedBefore})
+      ORDER BY id FOR UPDATE`;
     const resultado = await tx.mailSession.updateMany({
       where: { ssoSubject: subject, ssoIssuedAt: { lte: corteAtual.revokedBefore }, revokedAt: null },
       data: { revokedAt: new Date(), replacementRefresh: null },
     });
     await tx.mailSession.updateMany({ where: { ssoSubject: subject, ssoIssuedAt: { lte: corteAtual.revokedBefore } },
-      data: { replacementRefresh: null } });
+      data: { replacementRefresh: null, notificationsEnabled: false } });
+    await tx.mailPushSubscription.deleteMany({ where: { family: { ssoSubject: subject, ssoIssuedAt: { lte: corteAtual.revokedBefore } } } });
     return resultado.count;
   });
   return { ok: true, revoked };

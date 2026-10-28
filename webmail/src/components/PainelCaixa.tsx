@@ -551,7 +551,7 @@ export function PainelCaixa({ agendaHabilitada = true }: { agendaHabilitada?: bo
     const fonte = new EventSource("/api/mail/me/events", { withCredentials: true });
 
     fonte.addEventListener("message", (evento) => {
-      const dados = JSON.parse((evento as MessageEvent<string>).data) as { messages: ResumoMensagem[] };
+      const dados = JSON.parse((evento as MessageEvent<string>).data) as { messages: ResumoMensagem[]; notify?: boolean };
       void carregarPastas();
 
       // Notificacao do sistema vale para qualquer pasta aberta: o que importa
@@ -565,6 +565,7 @@ export function PainelCaixa({ agendaHabilitada = true }: { agendaHabilitada?: bo
           subject: m.subject,
         })),
         (id) => void abrir(id),
+        dados.notify === true,
       );
       // So mexe na lista se o cliente estiver olhando a Entrada sem recorte.
       // Injetar mensagem nova numa busca em andamento bagunca o resultado, e

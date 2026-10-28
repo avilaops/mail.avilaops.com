@@ -42,7 +42,7 @@ import { createFolder, deleteFolder, renameFolder } from "../services/folders.js
 import { createRule, deleteRule, listRules, updateRule } from "../services/rules.js";
 import { autenticarChave, criarChave, ehAdministrador, escopoDoToken, listarChaves, revogarChave, type ApiKeyScope } from "../services/apiKeys.js";
 import { handleAdminRoute } from "./admin-routes.js";
-import { chavePublica, listarInscricoes, pushDisponivel, registrarInscricao, removerInscricao } from "../services/push.js";
+import { avisoPermitido, avisosHabilitadosAqui, habilitarAvisosAqui, chavePublica, listarInscricoes, pushDisponivel, registrarInscricao, removerInscricao } from "../services/push.js";
 import { receberLogoutSso, receberSinalSso } from "../services/ssoRevocation.js";
 import { getCalendarSettings, getSettings, updateCalendarSettings, updateProfile, updateSettings } from "../services/settings.js";
 import { listSendAs, searchContacts } from "../services/contacts.js";
@@ -246,6 +246,7 @@ const VEDADO_A_CHAVE = [
   "/v1/me/password",
   "/v1/me/totp",
   "/v1/me/sessions",
+  "/v1/me/push",
   "/v1/me/migracao",
   "/v1/me/api-keys",
   "/v1/me/profile",
@@ -317,7 +318,7 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId
       if (!ativo) return;
       try {
         // Logout/suspensao/troca de dono tambem encerram conexoes ja abertas.
-        await autenticar(req, "/v1/me/events");
+        const sessaoAtual = await autenticar(req, "/v1/me/events");
         const [novas, caixa, lembretes] = await Promise.all([
           prisma.message.findMany({
             where: { mailboxId, receivedAt: { gt: ultimoVisto }, folder: { kind: "inbox" } },
@@ -337,7 +338,9 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId
         let enviou = false;
         if (novas.length > 0) {
           ultimoVisto = novas[novas.length - 1]?.receivedAt ?? ultimoVisto;
-          enviar("message", { messages: novas, unread: (await unreadCounts(mailboxId)).total });
+          const notify = await avisosHabilitadosAqui(mailboxId, sessaoAtual.sessionId) &&
+            await avisoPermitido(mailboxId, { titulo: "Mensagem nova", corpo: "", tipo: "mensagem", naEntrada: true });
+          enviar("message", { messages: novas, unread: (await unreadCounts(mailboxId)).total, notify });
           enviou = true;
         }
         if (caixa && caixa.davCalendarSeq > ultimoCalendarSeq) {
@@ -522,13 +525,20 @@ export async function handleUserRoute(
       disponivel: pushDisponivel(),
       chavePublica: chavePublica(),
       aparelhos: await listarInscricoes(sessao.mailboxId),
+      habilitadoAqui: await avisosHabilitadosAqui(sessao.mailboxId, sessao.sessionId),
     });
     return true;
   }
 
   if (path === "/v1/me/push" && method === "POST") {
     const input = pushSchema.parse(await readBody(req));
-    json(res, 201, await registrarInscricao(sessao.mailboxId, input, userAgent(req)));
+    json(res, 201, await registrarInscricao(sessao.mailboxId, input, userAgent(req), sessao.sessionId));
+    return true;
+  }
+
+  if (path === "/v1/me/push" && method === "PUT") {
+    const input = z.object({ enabled: z.boolean() }).parse(await readBody(req));
+    json(res, 200, await habilitarAvisosAqui(sessao.mailboxId, sessao.sessionId, input.enabled));
     return true;
   }
 
