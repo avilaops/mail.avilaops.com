@@ -68,7 +68,7 @@ export async function gravarSessao(tokens: TokensSessao, opts: { precisaTrocarSe
   jar.set(COOKIE_CSRF, csrf, { ...base, httpOnly: false, maxAge: duracao });
 
   if (opts.precisaTrocarSenha ?? tokens.mailbox?.mustChangePassword ?? jar.get(COOKIE_TROCAR)?.value === "1") {
-    jar.set(COOKIE_TROCAR, "1", { ...base, maxAge: tokens.expiresInSeconds });
+    jar.set(COOKIE_TROCAR, "1", { ...base, maxAge: duracao });
   } else {
     jar.delete(COOKIE_TROCAR);
   }

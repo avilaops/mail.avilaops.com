@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { chamarApi, chamarBrutoComSessao, chamarComSessao, origemDaRequisicao } from "@/lib/api";
-import { csrfValido, limparSessao, tokenDeRefresh } from "@/lib/sessao";
+import { csrfValido, limparMarcaTrocarSenha, limparSessao, tokenDeRefresh } from "@/lib/sessao";
 import { webmailBase } from "@/lib/sso";
 
 /** Rotas que devolvem binario em vez de JSON. */
@@ -152,6 +152,7 @@ async function encaminhar(request: NextRequest, caminho: string[]): Promise<Next
     return NextResponse.json({ erro: resposta.erro }, { status: resposta.status });
   }
 
+  if (rota === "me/first-password" && request.method === "POST") await limparMarcaTrocarSenha();
   return NextResponse.json(resposta.dados, { status: resposta.status });
 }
 
