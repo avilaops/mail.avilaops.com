@@ -295,12 +295,20 @@ await (async () => {
   const { createServer } = await import("node:http");
   const { default: jwtContrato } = await import("jsonwebtoken");
   const { loginSso } = await import("../services/session.js");
+  const { generateKeyPairSync, randomUUID } = await import("node:crypto");
+  const { handleUserRoute: rotaContratoSso } = await import("../api/me-routes.js");
+  const { fail: falharContrato } = await import("../api/http.js");
+  const chaves = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const publica = { ...chaves.publicKey.export({ format: "jwk" }), kid: "auth-contrato", alg: "RS256", use: "sig" };
   const segredo = "segredo-sso-exclusivo-do-teste-de-contrato";
   const antigas = { segredo: process.env.SSO_JWT_SECRET, auth: process.env.MAIL_AUTH_URL };
   process.env.SSO_JWT_SECRET = segredo;
   let politica: "permitido" | "negado" | "mfa" | "indisponivel" = "permitido";
   let consultas = 0;
   const emissor = createServer((req, res) => {
+    if (req.url === "/oauth/jwks") {
+      res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ keys: [publica] })); return;
+    }
     consultas++;
     if (politica === "indisponivel") { res.writeHead(503); res.end(); return; }
     if (politica === "negado") { res.writeHead(200, { "content-type": "text/html" }); res.end("Login sem acesso"); return; }
@@ -311,10 +319,20 @@ await (async () => {
   });
   await new Promise<void>((resolve) => emissor.listen(0, "127.0.0.1", resolve));
   process.env.MAIL_AUTH_URL = `http://127.0.0.1:${(emissor.address() as { port: number }).port}`;
+  const receptor = createServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    void rotaContratoSso(req, res, url.pathname, req.method ?? "GET", url)
+      .then((tratada) => { if (!tratada) falharContrato(res, 404, "Rota ausente"); })
+      .catch((erro: unknown) => falharContrato(res, erro instanceof AuthError ? erro.statusCode : 400, "Aviso recusado"));
+  });
+  await new Promise<void>((resolve) => receptor.listen(0, "127.0.0.1", resolve));
+  const baseReceptor = `http://127.0.0.1:${(receptor.address() as { port: number }).port}`;
   const agora = Math.floor(Date.now() / 1000);
-  const emitir = (extra: Record<string, unknown> = {}) => jwtContrato.sign({
-    sub: "identidade-auth-contrato", email: "contato@brilhax.com.br", iat: agora - 60, exp: agora + 1800, ...extra,
-  }, segredo, { issuer: "auth.avilaops.com" });
+  const emitir = (extra: Record<string, unknown> = {}) => {
+    const payload: Record<string, unknown> = { sub: "identidade-auth-contrato", email: "contato@brilhax.com.br", iat: agora - 60, exp: agora + 1800, ...extra };
+    for (const chave of Object.keys(payload)) if (payload[chave] === undefined) delete payload[chave];
+    return jwtContrato.sign(payload, segredo, { issuer: "auth.avilaops.com" });
+  };
   const token = emitir();
   try {
     politica = "negado";
@@ -340,7 +358,32 @@ await (async () => {
     await esperaErro("SSO sem prazo e rejeitado", () => loginSso({ ssoToken: emitir({ exp: undefined }) }), "invalida");
     await esperaErro("token de outra finalidade nao e cookie SSO", () => loginSso({ ssoToken: emitir({ aud: "outro-cliente" }) }), "invalida");
     check("Mail consultou o gate real de autorizacao do Auth", consultas >= 5);
+    const sessaoAntesDeSair = await loginSso({ ssoToken: token });
+    if ("choose" in sessaoAntesDeSair) throw new Error("Escolha inesperada no teste de logout");
+    const localPreservada = await login({ address: "contato@brilhax.com.br", password: SENHA });
+    const sinal = (extra: Record<string, unknown> = {}) => {
+      const { aud, ...claims } = extra;
+      return jwtContrato.sign({
+        sub: "identidade-auth-contrato", events: { "http://schemas.openid.net/event/backchannel-logout": {} },
+        jti: randomUUID(), iat: agora, exp: agora + 120, ...claims,
+      }, chaves.privateKey, { algorithm: "RS256", keyid: "auth-contrato", issuer: "https://auth.avilaops.com", audience: typeof aud === "string" ? aud : "mail", header: { alg: "RS256", typ: "logout+jwt", kid: "auth-contrato" } });
+    };
+    const enviarSinal = (logoutToken: string) => fetch(`${baseReceptor}/v1/auth/sso/logout`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ logoutToken }),
+    });
+    check("logout sem assinatura confiavel e recusado", (await enviarSinal(`${sinal()}adulterado`)).status === 401);
+    check("logout de outro cliente e recusado", (await enviarSinal(sinal({ aud: "outro-cliente" }))).status === 401);
+    check("logout valido e aceito", (await enviarSinal(sinal())).status === 200);
+    await esperaErro("logout no Auth revoga refresh vinculado", () => refresh({ refreshToken: sessaoAntesDeSair.refreshToken }), "invalida");
+    await esperaErro("cookie Auth anterior nao reabre apos logout", () => loginSso({ ssoToken: token }), "revogada");
+    check("logout do Auth nao revoga sessao de senha local", (await refresh({ refreshToken: localPreservada.refreshToken })).accessToken.length > 0);
+    check("aviso repetido continua idempotente", (await enviarSinal(sinal())).status === 200);
+    const novoCookie = emitir({ iat: agora + 1 });
+    const depoisDeSair = await loginSso({ ssoToken: novoCookie });
+    check("novo login Auth posterior a revogacao funciona", !("choose" in depoisDeSair));
   } finally {
+    receptor.closeAllConnections();
+    await new Promise<void>((resolve) => receptor.close(() => resolve()));
     emissor.closeAllConnections();
     await new Promise<void>((resolve) => emissor.close(() => resolve()));
     for (const [chave, valor] of [["SSO_JWT_SECRET", antigas.segredo], ["MAIL_AUTH_URL", antigas.auth]] as const) {
