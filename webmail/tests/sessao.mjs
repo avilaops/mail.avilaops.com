@@ -20,6 +20,7 @@ let mutacoes = 0;
 let falhaPush = false;
 let falhaInscricaoPush = false;
 let modoSso = "revogado";
+let logoutIndisponivel = false;
 const endpointPush = "https://push.exemplo.test/navegador-ci";
 const estadoPush = { disponivel: true, chavePublica: "BAECAwQ", habilitadoAqui: true,
   aparelhos: [{ id: "aparelho-ci", endpoint: endpointPush, nesteAparelho: true, userAgent: "Chromium CI", lastSentAt: null, createdAt: "2026-10-28T00:00:00Z" }] };
@@ -45,7 +46,7 @@ const backend = createServer(async (req, res) => {
     if (!refreshes.has(input.refreshToken)) return responder(401, { error: { message: "Sessao invalida" } });
     return responder(200, tokens());
   }
-  if (req.url === "/v1/auth/logout") return responder(200, { ok: true });
+  if (req.url === "/v1/auth/logout") return responder(logoutIndisponivel ? 503 : 200, logoutIndisponivel ? { error: { message: "Falha temporária ao encerrar sessão." } } : { ok: true });
   if (req.url === "/v1/auth/sso") {
     if (modoSso === "permitido") return responder(200, tokens());
     if (modoSso === "mfa") return responder(428, { error: { message: "Confirme o segundo fator." } });
@@ -199,6 +200,18 @@ try {
   assert.equal(rt?.secure, true);
   assert.equal(rt?.path, "/");
   assert.ok(rt.expires - Date.now() / 1000 < 3601, "cookie respeita o TTL da API");
+  logoutIndisponivel = true;
+  const tentativaLogout = await pagina.evaluate(async () => {
+    const csrf = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("avila_mail_csrf="))?.split("=")[1];
+    return (await fetch("/api/sessao", { method: "DELETE", headers: { "x-csrf-token": decodeURIComponent(csrf ?? "") } })).status;
+  });
+  assert.equal(tentativaLogout, 503, "logout nao afirma sucesso quando revogacao remota falha");
+  assert.ok((await contexto.cookies()).some((cookie) => cookie.name === "avila_mail_rt_v2"), "logout falho preserva token para repetir revogacao");
+  assert.equal(await pagina.evaluate(async () => {
+    const antes = location.href;
+    try { await window.MailCliente.sair(); return false; } catch { return location.href === antes; }
+  }), true, "cliente nao segue ao logout global quando Mail nao foi revogado");
+  logoutIndisponivel = false;
   await contexto.clearCookies();
   const legado = tokens();
   await contexto.addCookies([{ name: "avila_mail_rt", value: legado.refreshToken, domain: "127.0.0.1", path: "/api/sessao", httpOnly: true, sameSite: "Strict" }]);
