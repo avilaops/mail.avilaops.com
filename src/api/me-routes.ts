@@ -283,7 +283,8 @@ const SSE_MAX_MS = 5 * 60_000;
  * derruba stream ocioso sem avisar; reconectar de tempos em tempos e mais
  * confiavel do que descobrir que o canal morreu calado.
  */
-async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId: string): Promise<void> {
+export async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId: string,
+  tempos: { pollMs: number; maxMs: number } = { pollMs: SSE_POLL_MS, maxMs: SSE_MAX_MS }): Promise<void> {
   const inicial = await prisma.mailbox.findUniqueOrThrow({ where: { id: mailboxId }, select: { davCalendarSeq: true, messageEventSeq: true } });
   let ultimoCalendarSeq = inicial.davCalendarSeq;
   const recebido = req.headers["last-event-id"];
@@ -299,8 +300,13 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId
     "X-Accel-Buffering": "no",
   });
 
-  const enviar = (evento: string, dados: unknown) => {
-    res.write(`id: ${cursorMensagem(mailboxId, ultimaMensagemSeq)}\nevent: ${evento}\ndata: ${JSON.stringify(dados)}\n\n`);
+  const enviar = (evento: string, dados: unknown, seq = ultimaMensagemSeq) => {
+    if (!ativo || res.writableEnded || res.destroyed) return false;
+    res.write(`id: ${cursorMensagem(mailboxId, seq)}\nevent: ${evento}\ndata: ${JSON.stringify(dados)}\n\n`);
+    // Nenhum await entre publicar o evento e avancar o cursor. O encerramento
+    // por prazo nunca anuncia uma posicao cujo message ainda esta em consulta.
+    ultimaMensagemSeq = seq;
+    return true;
   };
 
   let ativo = true;
@@ -339,7 +345,6 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId
 
         let enviou = false;
         const cursorMudou = ultimaMensagemSeq !== chegadas.seq;
-        ultimaMensagemSeq = chegadas.seq;
         if (chegadas.messages.length > 0) {
           const [habilitado, entrada, outrasPastas] = await Promise.all([
             avisosHabilitadosAqui(mailboxId, sessaoAtual.sessionId),
@@ -348,10 +353,10 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId
           ]);
           const notifyIds = habilitado ? chegadas.avisos.filter((aviso) => aviso.tipo === "seguranca" ||
             (aviso.tipo === "mensagem" && !["spam", "trash", "sent", "drafts"].includes(aviso.pasta) && (aviso.pasta === "inbox" ? entrada : outrasPastas))).map((aviso) => aviso.id) : [];
-          enviar("message", { messages: chegadas.messages, unread: (await unreadCounts(mailboxId)).total, notify: notifyIds.length > 0, notifyIds });
+          enviar("message", { messages: chegadas.messages, unread: (await unreadCounts(mailboxId)).total, notify: notifyIds.length > 0, notifyIds }, chegadas.seq);
           enviou = true;
         } else if (cursorMudou) {
-          enviar("checkpoint", {});
+          enviar("checkpoint", {}, chegadas.seq);
           enviou = true;
         }
         if (caixa && caixa.davCalendarSeq > ultimoCalendarSeq) {
@@ -376,14 +381,14 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId
         consultando = false;
       }
     })();
-  }, SSE_POLL_MS);
+  }, tempos.pollMs);
 
   const limite = setTimeout(() => {
     enviar("reconnect", { reason: "limite de tempo da conexao" });
     encerrar();
-  }, SSE_MAX_MS);
+  }, tempos.maxMs);
 
-  enviar("ready", { mailboxId, pollMs: SSE_POLL_MS });
+  enviar("ready", { mailboxId, pollMs: tempos.pollMs });
 
   await new Promise<void>((resolve) => {
     const checar = setInterval(() => {

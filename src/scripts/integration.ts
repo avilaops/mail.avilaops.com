@@ -523,7 +523,7 @@ check("lista boas-vindas e mensagem recebida", listagem.messages.length === 2);
 const recebida = listagem.messages.find((m) => m.subject === "Orcamento aprovado");
 check("mensagem recebida aparece na listagem", recebida !== undefined);
 check("marca remetente como verificado", recebida?.senderVerified === true);
-check("nao vaza authResult cru na listagem", recebida?.authResult === undefined);
+check("nao vaza authResult cru na listagem", recebida !== undefined && !("authResult" in recebida));
 
 const busca = await listMessages({ mailboxId, query: "orcamento" });
 check("busca encontra por assunto", busca.messages.length === 1);
@@ -3056,6 +3056,49 @@ await (async () => {
       const retomadas = [...primeiroLote.messages, ...segundoLote.messages].map((mensagem) => mensagem.id);
       check("cursor recupera mais de 20 empates e mensagem durante queda sem duplicar", primeiroLote.messages.length === 20 &&
         new Set(retomadas).size === 26 && idsLote.every((id) => retomadas.includes(id!)) && retomadas.includes(duranteQueda!));
+      const { streamEvents } = await import("../api/me-routes.js");
+      const consultarPreferencia = prisma.mailboxSettings.findUnique;
+      let liberarPreferencia!: () => void;
+      let sinalizarConsulta!: () => void;
+      const preferenciaPendente = new Promise<void>((resolve) => { liberarPreferencia = resolve; });
+      const consultaIniciada = new Promise<void>((resolve) => { sinalizarConsulta = resolve; });
+      Object.assign(prisma.mailboxSettings, { findUnique: (input: { where?: { mailboxId?: string } }) => {
+        const real = Reflect.apply(consultarPreferencia, prisma.mailboxSettings, [input]) as Promise<unknown>;
+        if (input.where?.mailboxId !== mailboxPush) return real;
+        return real.then(async (preferencia) => { sinalizarConsulta(); await preferenciaPendente; return preferencia; });
+      } });
+      const servidorCurto = criarServidorHttp((req, res) => {
+        void streamEvents(req, res, mailboxPush, { pollMs: 20, maxMs: 3000 }).catch(() => { if (!res.writableEnded) res.end(); });
+      });
+      await new Promise<void>((resolve) => servidorCurto.listen(0, "127.0.0.1", resolve));
+      const abortoCurto = new AbortController();
+      const prazoCurto = setTimeout(() => abortoCurto.abort(), 6000);
+      let cursorAntesDoLimite = "";
+      let mensagemNoLimite: string | null = null;
+      try {
+        const respostaCurta = await fetch(`http://127.0.0.1:${(servidorCurto.address() as { port: number }).port}/events`, {
+          headers: { Authorization: `Bearer ${a.accessToken}` }, signal: abortoCurto.signal,
+        });
+        const leitorCurto = respostaCurta.body!.getReader();
+        let textoCurto = new TextDecoder().decode((await leitorCurto.read()).value);
+        cursorAntesDoLimite = textoCurto.match(/^id: (.+)$/m)?.[1] ?? "";
+        mensagemNoLimite = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox");
+        await Promise.race([consultaIniciada, new Promise<void>((_resolve, reject) => setTimeout(() => reject(new Error("Preferencia nao foi consultada no teste do prazo SSE")), 4000))]);
+        while (true) {
+          const parte = await leitorCurto.read(); if (parte.done) break;
+          textoCurto += new TextDecoder().decode(parte.value);
+        }
+        const cursoresPublicados = [...textoCurto.matchAll(/^id: (.+)$/gm)].map((match) => match[1]);
+        check("prazo SSE nao publica cursor de mensagem cuja preferencia ainda esta pendente", textoCurto.includes("event: reconnect") &&
+          !textoCurto.includes("event: message") && cursoresPublicados.every((cursor) => cursor === cursorAntesDoLimite));
+      } finally {
+        liberarPreferencia();
+        Object.assign(prisma.mailboxSettings, { findUnique: consultarPreferencia });
+        clearTimeout(prazoCurto); abortoCurto.abort();
+        await new Promise<void>((resolve) => servidorCurto.close(() => resolve()));
+      }
+      const aposLimite = await lerLote(cursorAntesDoLimite, true);
+      check("reconexao recupera mensagem interrompida pelo prazo", aposLimite.messages.some((mensagem) => mensagem.id === mensagemNoLimite));
     }
     await registrar(a.accessToken, endpointA);
   } finally {
