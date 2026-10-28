@@ -418,7 +418,32 @@ await (async () => {
     check("revogacao nao cruza identidades", (await refresh({ refreshToken: outraIdentidade.refreshToken })).accessToken.length > 0);
     check("aviso antigo nao regride o corte persistido", (await enviarSinal(sinal())).status === 200 &&
       (await prisma.mailSsoRevocation.findUniqueOrThrow({ where: { subject: "identidade-auth-contrato" } })).revokedBefore.getTime() === (agora + 2) * 1000);
-    const sessaoStream = await loginSso({ ssoToken: emitir({ sub: "identidade-stream-auth" }) });
+    const eventoSsf = (tipo: string, quando: number) => jwtContrato.sign({
+      jti: randomUUID(), iat: quando,
+      sub_id: { format: "complex", user: { format: "email", email: "contato@brilhax.com.br" } },
+      events: { [tipo]: { event_timestamp: quando } },
+    }, chaves.privateKey, { algorithm: "RS256", keyid: "auth-contrato", issuer: "https://auth.avilaops.com", audience: "mail", header: { alg: "RS256", typ: "secevent+jwt", kid: "auth-contrato" } });
+    const enviarSsf = (securityEventToken: string) => fetch(`${baseReceptor}/v1/auth/sso/events`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ securityEventToken }),
+    });
+    const cookieAntesDoSinal = emitir({ iat: agora + 3 });
+    const antesDoSinal = await loginSso({ ssoToken: cookieAntesDoSinal });
+    if ("choose" in antesDoSinal) throw new Error("SSF esperava somente uma caixa");
+    const localSsf = await login({ address: "contato@brilhax.com.br", password: SENHA });
+    const sinalDesligada = eventoSsf("https://schemas.openid.net/secevent/risc/event-type/account-disabled", agora + 3);
+    check("SSF sem assinatura confiavel e recusado", (await enviarSsf(`${sinalDesligada}invalido`)).status === 401);
+    check("sinal de conta desligada e aceito", (await enviarSsf(sinalDesligada)).status === 200);
+    await esperaErro("conta desligada nao renova Mail", () => refresh({ refreshToken: antesDoSinal.refreshToken }), "revogada");
+    await esperaErro("conta desligada nao reutiliza cookie anterior", () => loginSso({ ssoToken: cookieAntesDoSinal }), "revogada");
+    check("sinal SSF nao derruba sessao de senha local", (await refresh({ refreshToken: localSsf.refreshToken })).accessToken.length > 0);
+    const cookieComNovoFator = emitir({ iat: agora + 4 });
+    const antesDoFator = await loginSso({ ssoToken: cookieComNovoFator });
+    if ("choose" in antesDoFator) throw new Error("Credencial esperava somente uma caixa");
+    check("sinal de mudanca de credencial e aceito", (await enviarSsf(eventoSsf("https://schemas.openid.net/secevent/caep/event-type/credential-change", agora + 4))).status === 200);
+    await esperaErro("mudanca de MFA exige nova prova do Auth", () => refresh({ refreshToken: antesDoFator.refreshToken }), "revogada");
+    const cookieAtual = emitir({ iat: agora + 5 });
+    check("Auth pode restabelecer acesso com sessao nova", !("choose" in await loginSso({ ssoToken: cookieAtual })));
+    const sessaoStream = await loginSso({ ssoToken: emitir({ sub: "identidade-stream-auth", iat: agora + 5 }) });
     if ("choose" in sessaoStream) throw new Error("Stream esperava uma caixa");
     const abortoStream = new AbortController();
     const limiteStream = setTimeout(() => abortoStream.abort(), 12_000);
@@ -432,7 +457,7 @@ await (async () => {
       proximo.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 150)),
     ]);
     check("SSE permanece aberto antes da revogacao", !fechouAntes);
-    await enviarSinal(sinal({ sub: "identidade-stream-auth" }));
+    await enviarSinal(sinal({ sub: "identidade-stream-auth", iat: agora + 5, exp: agora + 125 }));
     let streamEncerrado = false;
     try { streamEncerrado = (await proximo).done === true; } catch { /* timeout nao conta como revogacao */ }
     finally { clearTimeout(limiteStream); abortoStream.abort(); leitor.releaseLock(); }
