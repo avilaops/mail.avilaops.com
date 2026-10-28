@@ -160,7 +160,7 @@ try {
   const csrfAntes = (await contexto.cookies()).find((cookie) => cookie.name === "avila_mail_csrf").value;
   await pagina.evaluate(() => window.MailCliente.api("/me/messages/mark-all-read", { method: "POST", body: { folder: "inbox" } }));
   assert.equal(mutacoes, 1, "cliente real renova e repete a mutacao uma unica vez");
-  assert.equal((await contexto.cookies()).find((cookie) => cookie.name === "avila_mail_csrf").value, csrfAntes, "renovacao preserva CSRF em requests concorrentes");
+  assert.ok((await contexto.cookies()).find((cookie) => cookie.name === "avila_mail_csrf").value === csrfAntes, "renovacao preserva CSRF em requests concorrentes");
   assert.equal(await pagina.evaluate(async () => (await fetch("/api/sessao/retomar", { method: "POST" })).status), 403, "ponte de mutacao exige CSRF");
 
   primeiraSenha = true;

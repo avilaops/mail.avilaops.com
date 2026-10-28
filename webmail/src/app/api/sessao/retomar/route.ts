@@ -16,7 +16,10 @@ export async function GET(request: NextRequest) {
     (destinoApi || ["/caixa", "/conta", "/admin", "/agenda", "/definir-senha"].includes(destino.pathname));
   const resposta = await chamarComSessao("/me", { origem: origemDaRequisicao(request) });
   if (resposta.ok) return NextResponse.redirect(permitido ? destino : new URL("/caixa", base));
-  if (resposta.status === 409) return NextResponse.redirect(new URL("/definir-senha", base));
+  if (resposta.status === 409) {
+    if (destinoApi) return NextResponse.json({ erro: resposta.erro }, { status: 409 });
+    return NextResponse.redirect(new URL("/definir-senha", base));
+  }
   if (resposta.status === 401) {
     await limparSessao();
     if (destinoApi) return NextResponse.json({ erro: "Sessao encerrada." }, { status: 401 });
