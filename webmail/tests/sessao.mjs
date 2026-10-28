@@ -102,9 +102,26 @@ try {
   // criar uma pagina de teste dentro da aplicacao ou copiar sua logica.
   const cliente = await build({ entryPoints: ["src/lib/cliente.ts"], bundle: true, write: false, format: "iife", globalName: "MailCliente", logLevel: "silent" });
   await contexto.addInitScript({ content: `${cliente.outputFiles[0].text}\nglobalThis.MailCliente = MailCliente;` });
+  const avisos = await build({ entryPoints: ["src/lib/notificacoes.ts"], bundle: true, write: false, format: "iife", globalName: "MailAvisos", logLevel: "silent" });
+  await contexto.addInitScript({ content: `${avisos.outputFiles[0].text}\nglobalThis.MailAvisos = MailAvisos;` });
   const pagina = await contexto.newPage();
   const base = "https://127.0.0.1:3441";
   await pagina.goto(`${base}/entrar?local=1`);
+  const contagemAvisos = await pagina.evaluate(() => {
+    const Original = window.Notification;
+    let emitidos = 0;
+    window.Notification = class { static permission = "granted"; constructor() { emitidos++; } };
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    const mensagens = [{ id: "mensagem-ci", fromAddress: "remetente@exemplo.test", subject: "Teste" }];
+    window.MailAvisos.avisarSistema(mensagens, () => undefined, false);
+    const desligado = emitidos;
+    window.MailAvisos.avisarSistema(mensagens, () => undefined, true);
+    const ligado = emitidos;
+    window.Notification = Original;
+    delete document.visibilityState;
+    return { desligado, ligado };
+  });
+  assert.deepEqual(contagemAvisos, { desligado: 0, ligado: 1 }, "balao respeita decisao do servidor para preferencia e aparelho");
   const login = async () => {
     assert.equal(await pagina.evaluate(async () => (await fetch("/api/sessao", {
       method: "POST", headers: { "content-type": "application/json" },

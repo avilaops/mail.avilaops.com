@@ -2945,6 +2945,13 @@ await (async () => {
     method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ endpoint, keys: { p256dh: "chave-publica-exclusiva-ci", auth: "segredo-exclusivo-ci" } }),
   });
+  const habilitar = async (token: string, enabled: boolean) => fetch(`${baseAgendaApi}/v1/me/push`, {
+    method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ enabled }),
+  });
+  const estadoA = async () => (await fetch(`${baseAgendaApi}/v1/me/push`, { headers: { Authorization: `Bearer ${a.accessToken}` } })).json() as Promise<{ habilitadoAqui: boolean }>;
+  check("aparelho novo depende de autorizacao explicita", (await estadoA()).habilitadoAqui === false);
+  check("aviso com aba aberta pode ser autorizado sem VAPID", (await habilitar(a.accessToken, true)).status === 200 && (await estadoA()).habilitadoAqui === true);
+  check("desligar aqui desativa tambem aviso com aba aberta", (await habilitar(a.accessToken, false)).status === 200 && (await estadoA()).habilitadoAqui === false);
   check("dois aparelhos autorizam push independentemente", (await registrar(a.accessToken, endpointA)).status === 201 &&
     (await registrar(b.accessToken, endpointB)).status === 201);
   const rotacionada = await refresh({ refreshToken: a.refreshToken });
