@@ -361,6 +361,9 @@ await (async () => {
     check("Mail consultou o gate real de autorizacao do Auth", consultas >= 5);
     const sessaoAntesDeSair = await loginSso({ ssoToken: token });
     if ("choose" in sessaoAntesDeSair) throw new Error("Escolha inesperada no teste de logout");
+    const { registrarInscricao: registrarPushSso } = await import("../services/push.js");
+    const endpointSso = "https://push.exemplo.test/contrato-sso";
+    await registrarPushSso(caixa.id, { endpoint: endpointSso, keys: { p256dh: "chave-ci", auth: "auth-ci" } }, "SSO CI", verifyAccessToken(sessaoAntesDeSair.accessToken)!.sid);
     const localPreservada = await login({ address: "contato@brilhax.com.br", password: SENHA });
     const sinal = (extra: Record<string, unknown> = {}) => {
       const { aud, ...claims } = extra;
@@ -375,6 +378,7 @@ await (async () => {
     check("logout sem assinatura confiavel e recusado", (await enviarSinal(`${sinal()}adulterado`)).status === 401);
     check("logout de outro cliente e recusado", (await enviarSinal(sinal({ aud: "outro-cliente" }))).status === 401);
     check("logout valido e aceito", (await enviarSinal(sinal())).status === 200);
+    check("backchannel remove chaves push da familia SSO", await prisma.mailPushSubscription.count({ where: { endpoint: endpointSso } }) === 0);
     await esperaErro("logout no Auth revoga refresh vinculado", () => refresh({ refreshToken: sessaoAntesDeSair.refreshToken }), "revogada");
     await esperaErro("cookie Auth anterior nao reabre apos logout", () => loginSso({ ssoToken: token }), "revogada");
     check("logout do Auth nao revoga sessao de senha local", (await refresh({ refreshToken: localPreservada.refreshToken })).accessToken.length > 0);
@@ -429,10 +433,12 @@ await (async () => {
     const cookieAntesDoSinal = emitir({ iat: agora + 3 });
     const antesDoSinal = await loginSso({ ssoToken: cookieAntesDoSinal });
     if ("choose" in antesDoSinal) throw new Error("SSF esperava somente uma caixa");
+    await registrarPushSso(caixa.id, { endpoint: endpointSso, keys: { p256dh: "chave-ci", auth: "auth-ci" } }, "SSO CI", verifyAccessToken(antesDoSinal.accessToken)!.sid);
     const localSsf = await login({ address: "contato@brilhax.com.br", password: SENHA });
     const sinalDesligada = eventoSsf("https://schemas.openid.net/secevent/risc/event-type/account-disabled", agora + 3);
     check("SSF sem assinatura confiavel e recusado", (await enviarSsf(`${sinalDesligada}invalido`)).status === 401);
     check("sinal de conta desligada e aceito", (await enviarSsf(sinalDesligada)).status === 200);
+    check("SSF remove chaves push da identidade revogada", await prisma.mailPushSubscription.count({ where: { endpoint: endpointSso } }) === 0);
     await esperaErro("conta desligada nao renova Mail", () => refresh({ refreshToken: antesDoSinal.refreshToken }), "revogada");
     await esperaErro("conta desligada nao reutiliza cookie anterior", () => loginSso({ ssoToken: cookieAntesDoSinal }), "revogada");
     check("sinal SSF nao derruba sessao de senha local", (await refresh({ refreshToken: localSsf.refreshToken })).accessToken.length > 0);
@@ -2935,7 +2941,17 @@ const baseAgendaApi = `http://127.0.0.1:${portaAgendaApi}`;
 
 console.log("\n[46a] Push acompanha o aparelho autenticado e as preferencias");
 await (async () => {
-  const { avisoPermitido, listarInscricoes } = await import("../services/push.js");
+  const { avisoPermitido, listarInscricoes, enviarAviso } = await import("../services/push.js");
+  const { config: configPush } = await import("../lib/config.js");
+  const { default: transportePush } = await import("web-push");
+  const enviarOriginal = transportePush.sendNotification;
+  const configuracaoOriginal = { ...configPush.push };
+  const entregasPush: string[] = [];
+  transportePush.sendNotification = async (inscricao) => {
+    entregasPush.push(inscricao.endpoint);
+    return { statusCode: 201, body: "", headers: {} };
+  };
+  try {
   const a = await login({ address: "davteste@brilhax.com.br", password: "SenhaDoDav12345" });
   const b = await login({ address: "davteste@brilhax.com.br", password: "SenhaDoDav12345" });
   const mailboxPush = a.mailbox.id;
@@ -2954,11 +2970,56 @@ await (async () => {
   check("desligar aqui desativa tambem aviso com aba aberta", (await habilitar(a.accessToken, false)).status === 200 && (await estadoA()).habilitadoAqui === false);
   check("dois aparelhos autorizam push independentemente", (await registrar(a.accessToken, endpointA)).status === 201 &&
     (await registrar(b.accessToken, endpointB)).status === 201);
+  Object.assign(configPush.push, transportePush.generateVAPIDKeys());
+  const capturarEnvio = async () => {
+    entregasPush.length = 0;
+    await enviarAviso(mailboxPush, { titulo: "Contrato de entrega", corpo: "Teste CI", tipo: "seguranca" });
+    return [...entregasPush].sort();
+  };
+  check("transporte envia somente a dois aparelhos autorizados", (await capturarEnvio()).join() === [endpointA, endpointB].sort().join());
+  const abortarAvisos = new AbortController();
+  const limiteAvisos = setTimeout(() => abortarAvisos.abort(), 30_000);
+  const fluxoAvisos = await fetch(`${baseAgendaApi}/v1/me/events`, { headers: { Authorization: `Bearer ${a.accessToken}` }, signal: abortarAvisos.signal });
+  const leitorAvisos = fluxoAvisos.body!.getReader();
+  let bufferAvisos = "";
+  const lerAviso = async (): Promise<{ notify: boolean }> => {
+    while (true) {
+      const divisor = bufferAvisos.indexOf("\n\n");
+      if (divisor !== -1) {
+        const evento = bufferAvisos.slice(0, divisor);
+        bufferAvisos = bufferAvisos.slice(divisor + 2);
+        if (evento.startsWith("event: message\n")) return JSON.parse(evento.split("\ndata: ")[1]!) as { notify: boolean };
+      } else {
+        const parte = await leitorAvisos.read();
+        if (parte.done) throw new Error("Stream terminou antes do aviso");
+        bufferAvisos += new TextDecoder().decode(parte.value);
+      }
+    }
+  };
+  try {
+    await prisma.mailboxSettings.upsert({ where: { mailboxId: mailboxPush }, create: { mailboxId: mailboxPush, notifyEnabled: false }, update: { notifyEnabled: false } });
+    const mensagemSilenciosa = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox");
+    await prisma.message.update({ where: { id: mensagemSilenciosa! }, data: { receivedAt: new Date() } });
+    check("SSE entrega dados mas cala balao quando preferencia desliga", (await lerAviso()).notify === false);
+    await prisma.mailboxSettings.update({ where: { mailboxId: mailboxPush }, data: { notifyEnabled: true } });
+    const mensagemAudivel = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox");
+    await prisma.message.update({ where: { id: mensagemAudivel! }, data: { receivedAt: new Date() } });
+    check("SSE permite balao somente com aparelho e preferencia ligados", (await lerAviso()).notify === true);
+    await habilitar(a.accessToken, false);
+    const mensagemAparelhoMudo = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox");
+    await prisma.message.update({ where: { id: mensagemAparelhoMudo! }, data: { receivedAt: new Date() } });
+    check("SSE aberto respeita desligamento posterior do aparelho", (await lerAviso()).notify === false);
+    await registrar(a.accessToken, endpointA);
+  } finally {
+    abortarAvisos.abort();
+    clearTimeout(limiteAvisos);
+  }
   const rotacionada = await refresh({ refreshToken: a.refreshToken });
   check("rotacao conserva inscricao do aparelho", (await listarInscricoes(mailboxPush)).length === 2);
   await logout(a.refreshToken);
   check("logout pelo ancestral remove somente o proprio push", (await listarInscricoes(mailboxPush)).map((i) => i.endpoint).join() === endpointB);
   check("logout remove o segredo de entrega do aparelho", await prisma.mailPushSubscription.count({ where: { endpoint: endpointA } }) === 0);
+  check("transporte nao envia apos logout", (await capturarEnvio()).join() === endpointB);
   const c = await login({ address: "davteste@brilhax.com.br", password: "SenhaDoDav12345" });
   await registrar(c.accessToken, endpointA);
   // O mesmo endpoint muda de autorizacao; logout antigo nao pode apaga-lo.
@@ -2966,8 +3027,17 @@ await (async () => {
   await logout(c.refreshToken);
   check("inscricao reatribuida sobrevive ao logout da autorizacao anterior", (await listarInscricoes(mailboxPush)).length === 2);
   const idB = verifyAccessToken(b.accessToken)!.sid;
+  await prisma.mailbox.update({ where: { id: mailboxPush }, data: { status: "suspended" } });
+  check("transporte nao envia para caixa suspensa", (await capturarEnvio()).length === 0);
+  await prisma.mailbox.update({ where: { id: mailboxPush }, data: { status: "active" } });
+  await prisma.mailSession.update({ where: { id: idB }, data: { authSource: "sso", ssoEmail: "dono-anterior@exemplo.test" } });
+  check("transporte nao envia a identidade que deixou de ser dona", (await capturarEnvio()).length === 0);
+  await prisma.mailSession.update({ where: { id: idB }, data: { authSource: "password", ssoEmail: null } });
   await prisma.mailSession.update({ where: { id: idB }, data: { expiresAt: new Date(Date.now() - 1000) } });
   check("sessao expirada nao recebe push nem aparece como ativa", (await listarInscricoes(mailboxPush)).length === 0);
+  check("transporte nao envia apos expiracao nem alerta de seguranca", (await capturarEnvio()).length === 0);
+  await prisma.mailPushSubscription.create({ data: { mailboxId: mailboxPush, endpoint: "https://push.exemplo.test/sem-familia", p256dh: "chave-ci", auth: "auth-ci" } });
+  check("inscricao sem familia nunca chega ao transporte", (await capturarEnvio()).length === 0);
   await logoutAll(mailboxPush);
   check("logout global elimina inclusive inscricoes expiradas", await prisma.mailPushSubscription.count({ where: { mailboxId: mailboxPush } }) === 0);
   check("token de sessao revogada nao reinscreve aparelho", (await registrar(rotacionada.accessToken, endpointA)).status === 401);
@@ -2988,6 +3058,10 @@ await (async () => {
   check("silencio atravessa meia noite no fuso da operacao", !await avisoPermitido(mailboxPush, { titulo: "Teste", corpo: "Teste" }, new Date("2035-01-02T03:00:00Z")));
   check("fim do silencio libera mensagem", await avisoPermitido(mailboxPush, { titulo: "Teste", corpo: "Teste" }, new Date("2035-01-02T12:00:00Z")));
   await prisma.mailboxSettings.update({ where: { mailboxId: mailboxPush }, data: { notifyQuietStart: null, notifyQuietEnd: null } });
+  } finally {
+    transportePush.sendNotification = enviarOriginal;
+    Object.assign(configPush.push, configuracaoOriginal);
+  }
 })();
 
 // Sem credencial, nada existe.

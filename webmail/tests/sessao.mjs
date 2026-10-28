@@ -17,6 +17,10 @@ let indisponivel = false;
 let sequencia = 0;
 let primeiraSenha = false;
 let mutacoes = 0;
+let falhaPush = false;
+const endpointPush = "https://push.exemplo.test/navegador-ci";
+const estadoPush = { disponivel: true, chavePublica: "chave-publica-ci", habilitadoAqui: true,
+  aparelhos: [{ id: "aparelho-ci", endpoint: endpointPush, userAgent: "Chromium CI", lastSentAt: null, createdAt: "2026-10-28T00:00:00Z" }] };
 const mailbox = { id: "teste", address: "teste@exemplo.test", displayName: "Teste", quotaBytes: "1000", usedBytes: "0", mustChangePassword: false };
 function tokens() {
   const accessToken = `acesso-${++sequencia}`;
@@ -61,6 +65,16 @@ const backend = createServer(async (req, res) => {
     return res.end("Subject: teste\r\n\r\nMensagem de teste");
   }
   if (req.url === "/v1/me") return responder(200, mailbox);
+  if (req.url === "/v1/me/settings") return responder(200, { notifyEnabled: true, notifyOnlyInbox: true, notifyQuietStart: null, notifyQuietEnd: null });
+  if (req.url === "/v1/me/push") {
+    if (req.method === "PUT") {
+      if (falhaPush) return responder(503, { error: { message: "Falha controlada ao desligar" } });
+      estadoPush.habilitadoAqui = input.enabled;
+      if (!input.enabled) estadoPush.aparelhos = [];
+      return responder(200, { ok: true });
+    }
+    return responder(200, estadoPush);
+  }
   if (req.url === "/v1/me/folders") return responder(200, { folders: [] });
   if (req.url?.startsWith("/v1/me/messages")) return responder(200, { messages: [], nextCursor: null });
   responder(200, {});
@@ -104,6 +118,8 @@ try {
   await contexto.addInitScript({ content: `${cliente.outputFiles[0].text}\nglobalThis.MailCliente = MailCliente;` });
   const avisos = await build({ entryPoints: ["src/lib/notificacoes.ts"], bundle: true, write: false, format: "iife", globalName: "MailAvisos", logLevel: "silent" });
   await contexto.addInitScript({ content: `${avisos.outputFiles[0].text}\nglobalThis.MailAvisos = MailAvisos;` });
+  const interfaceAvisos = await build({ stdin: { contents: 'import { createElement } from "react"; import { createRoot } from "react-dom/client"; import { AvisosDeMensagem } from "./src/components/AvisosDeMensagem"; export function montar(elemento) { const raiz = createRoot(elemento); raiz.render(createElement(AvisosDeMensagem)); return () => raiz.unmount(); }', resolveDir: process.cwd(), loader: "js" }, bundle: true, write: false, format: "iife", globalName: "MailAvisosUi", define: { "process.env.NODE_ENV": '"production"' }, logLevel: "silent" });
+  await contexto.addInitScript({ content: `${interfaceAvisos.outputFiles[0].text}\nglobalThis.MailAvisosUi = MailAvisosUi;` });
   const pagina = await contexto.newPage();
   const base = "https://127.0.0.1:3441";
   await pagina.goto(`${base}/entrar?local=1`);
@@ -189,6 +205,37 @@ try {
   assert.ok((await contexto.cookies()).some((cookie) => cookie.name === "avila_mail_trocar"), "marca do primeiro acesso sobrevive a renovacao");
   await pagina.evaluate(() => window.MailCliente.api("/me/first-password", { method: "POST", body: { newPassword: "senha-exclusiva-ci" } }));
   assert.equal((await contexto.cookies()).some((cookie) => cookie.name === "avila_mail_trocar"), false, "marca removida somente apos definir a senha");
+  // Monta o componente de producao na pagina real, com API pelo BFF e CSP.
+  // Somente a permissao/SW sao controlados: o Chromium CI nao tem provedor push.
+  await pagina.evaluate((endpoint) => {
+    const original = Object.getOwnPropertyDescriptor(navigator, "serviceWorker");
+    const notificacaoOriginal = window.Notification;
+    window.Notification = class { static permission = "granted"; };
+    Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: {
+      getRegistration: async () => ({ pushManager: { getSubscription: async () => ({ endpoint, unsubscribe: async () => { throw new Error("Falha controlada do navegador"); } }) } }),
+    } });
+    const elemento = document.createElement("div");
+    elemento.id = "avisos-reais-ci";
+    document.body.append(elemento);
+    const desmontar = window.MailAvisosUi.montar(elemento);
+    window.limparAvisosCi = () => {
+      desmontar(); elemento.remove(); window.Notification = notificacaoOriginal;
+      if (original) Object.defineProperty(navigator, "serviceWorker", original);
+      else delete navigator.serviceWorker;
+    };
+  }, endpointPush);
+  const avisosReais = pagina.locator("#avisos-reais-ci");
+  await avisosReais.getByText("Ligado: você recebe o aviso mesmo com o webmail fechado.", { exact: true }).waitFor();
+  falhaPush = true;
+  await avisosReais.getByRole("button", { name: "Desligar aqui" }).click();
+  await avisosReais.getByRole("alert").filter({ hasText: "Falha controlada ao desligar" }).waitFor();
+  assert.equal(estadoPush.habilitadoAqui, true, "falha remota nao finge que desligou");
+  falhaPush = false;
+  await avisosReais.getByRole("button", { name: "Desligar aqui" }).click();
+  await avisosReais.getByRole("alert").filter({ hasText: "Falha controlada do navegador" }).waitFor();
+  assert.equal(estadoPush.habilitadoAqui, false, "falha local nao mantem servidor autorizado");
+  assert.equal(await avisosReais.getByRole("button", { name: "Desligar aqui" }).count(), 0, "inscricao local orfa nao aparece como ligada");
+  await pagina.evaluate(() => window.limparAvisosCi());
   let saiuDoAuth = 0;
   let inicioNovoLogin = 0;
   await pagina.route("https://auth.exemplo.test/**", async (rota) => {
