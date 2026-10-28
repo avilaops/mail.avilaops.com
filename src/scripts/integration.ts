@@ -250,7 +250,7 @@ await esperaErro("apos reuso, o refresh novo tambem cai", () =>
 const eventoReuso = await prisma.mailEvent.findFirst({ where: { type: "session.reuse_detected" } });
 check("reuso vira evento de auditoria", eventoReuso !== null);
 
-const { logout, logoutAll, revokeSession } = await import("../services/session.js");
+const { logout, logoutAll, revokeSession: revogarSessaoTeste } = await import("../services/session.js");
 const { createHash } = await import("node:crypto");
 const hashRefresh = (token: string) => createHash("sha256").update(token).digest("hex");
 const comContexto = await login({ address: "contato@brilhax.com.br", password: SENHA, ip: "203.0.113.9", userAgent: "Navegador de teste" });
@@ -279,7 +279,7 @@ if (resultadoDurante?.status === "fulfilled") {
 const aparelho = await login({ address: "contato@brilhax.com.br", password: SENHA });
 const idAparelho = verifyAccessToken(aparelho.accessToken)!.sid;
 const novoAparelho = await refresh({ refreshToken: aparelho.refreshToken });
-await revokeSession(caixa.id, idAparelho);
+await revogarSessaoTeste(caixa.id, idAparelho);
 await esperaErro("revogar aparelho pelo id antigo revoga a familia", () => refresh({ refreshToken: novoAparelho.refreshToken }), "invalida");
 
 console.log("\n[6] Forca bruta: bloqueia o atacante sem trancar o cliente");
