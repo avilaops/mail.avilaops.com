@@ -181,7 +181,9 @@ try {
       saiuDoAuth++;
       inicioNovoLogin = Date.now();
       await contexto.clearCookies({ name: "avila_sso" });
-      await rota.fulfill({ status: 303, headers: { Location: `${base}/api/sessao/sso/novo-login` }, body: "" });
+      // Playwright nao intercepta a proxima URL da mesma cadeia de redirect.
+      // O retorno do emissor e exercitado separadamente sem resolver .test.
+      await rota.fulfill({ status: 200, contentType: "text/html", body: "<h1>Sessao anterior encerrada</h1>" });
     } else {
       assert.equal(url.pathname, "/login");
       assert.ok(Date.now() - inicioNovoLogin >= 1000, "nova prova e solicitada depois da fronteira do segundo");
@@ -193,8 +195,13 @@ try {
   assert.equal(new URL(pagina.url()).pathname, "/api/sessao/sso/reautenticar", "cookie revogado tem recuperacao explicita");
   assert.equal(saiuDoAuth, 0, "recuperacao nao encerra sessao global sem clique");
   await pagina.getByRole("button", { name: "Encerrar sessao anterior e entrar novamente" }).click();
-  await pagina.waitForURL("https://auth.exemplo.test/login?**");
+  await pagina.getByRole("heading", { name: "Sessao anterior encerrada" }).waitFor();
   assert.equal(saiuDoAuth, 1);
+  const novoLogin = await contexto.request.get(`${base}/api/sessao/sso/novo-login`, { maxRedirects: 0 });
+  assert.equal(novoLogin.status(), 307);
+  assert.equal(new URL(novoLogin.headers().location).origin, "https://auth.exemplo.test");
+  assert.equal(new URL(novoLogin.headers().location).pathname, "/login");
+  assert.ok(Date.now() - inicioNovoLogin >= 1000);
   console.log("PASSOU — sessao real no navegador: reabertura, renovacao, JSON/download/SSE, recuperacao e cookies");
 } finally {
   await browser?.close();

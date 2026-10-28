@@ -67,9 +67,11 @@ O emissor usa precisão de segundos. Se a nova prova e a alteração de MFA caem
 no mesmo segundo, o Mail mantém o corte inclusivo e pede reautenticação, pois
 não consegue distinguir com segurança uma prova anterior de uma posterior.
 A tela de recuperação só encerra o login único após clique explícito. O Auth
-faz o POST de logout e retorna ao Mail, que aguarda 1,1 segundo antes de solicitar
-o novo login. Assim a recuperação emite uma prova após a fronteira temporal,
-sem enfraquecer a revogação nem criar um ciclo de redirects silencioso.
+faz o POST de logout e retorna ao Mail. A espera atual de 1,1 segundo evita
+repetição imediata, mas **não comprova ordenação**: o emissor pode assinar o aviso
+em uma tarefa posterior à resposta. A correção completa depende da
+[proposta de ajuste do emissor](contrato-auth-mail-ordenacao.md), ainda pendente
+de autorização de escopo. O módulo Auth não está concluído nem liberado para produção.
 
 ## Configuração e publicação
 

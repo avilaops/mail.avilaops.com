@@ -2933,6 +2933,47 @@ await new Promise<void>((r) => servidorAgendaApi.listen(0, "127.0.0.1", () => r(
 const portaAgendaApi = (servidorAgendaApi.address() as { port: number }).port;
 const baseAgendaApi = `http://127.0.0.1:${portaAgendaApi}`;
 
+console.log("\n[46a] Push acompanha o aparelho autenticado e as preferencias");
+await (async () => {
+  const { avisoPermitido, listarInscricoes } = await import("../services/push.js");
+  const a = await login({ address: "davteste@brilhax.com.br", password: "SenhaDoDav12345" });
+  const b = await login({ address: "davteste@brilhax.com.br", password: "SenhaDoDav12345" });
+  const mailboxPush = a.mailbox.id;
+  const endpointA = "https://push.exemplo.test/aparelho-a";
+  const endpointB = "https://push.exemplo.test/aparelho-b";
+  const registrar = async (token: string, endpoint: string) => fetch(`${baseAgendaApi}/v1/me/push`, {
+    method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint, keys: { p256dh: "chave-publica-exclusiva-ci", auth: "segredo-exclusivo-ci" } }),
+  });
+  check("dois aparelhos autorizam push independentemente", (await registrar(a.accessToken, endpointA)).status === 201 &&
+    (await registrar(b.accessToken, endpointB)).status === 201);
+  const rotacionada = await refresh({ refreshToken: a.refreshToken });
+  check("rotacao conserva inscricao do aparelho", (await listarInscricoes(mailboxPush)).length === 2);
+  await logout(a.refreshToken);
+  check("logout pelo ancestral remove somente o proprio push", (await listarInscricoes(mailboxPush)).map((i) => i.endpoint).join() === endpointB);
+  check("logout remove o segredo de entrega do aparelho", await prisma.mailPushSubscription.count({ where: { endpoint: endpointA } }) === 0);
+  const c = await login({ address: "davteste@brilhax.com.br", password: "SenhaDoDav12345" });
+  await registrar(c.accessToken, endpointA);
+  // O mesmo endpoint muda de autorizacao; logout antigo nao pode apaga-lo.
+  await registrar(b.accessToken, endpointA);
+  await logout(c.refreshToken);
+  check("inscricao reatribuida sobrevive ao logout da autorizacao anterior", (await listarInscricoes(mailboxPush)).length === 2);
+  const idB = verifyAccessToken(b.accessToken)!.sid;
+  await prisma.mailSession.update({ where: { id: idB }, data: { expiresAt: new Date(Date.now() - 1000) } });
+  check("sessao expirada nao recebe push nem aparece como ativa", (await listarInscricoes(mailboxPush)).length === 0);
+  await logoutAll(mailboxPush);
+  check("logout global elimina inclusive inscricoes expiradas", await prisma.mailPushSubscription.count({ where: { mailboxId: mailboxPush } }) === 0);
+  check("token de sessao revogada nao reinscreve aparelho", (await registrar(rotacionada.accessToken, endpointA)).status === 401);
+  await prisma.mailboxSettings.upsert({ where: { mailboxId: mailboxPush }, create: { mailboxId: mailboxPush, notifyEnabled: false }, update: { notifyEnabled: false } });
+  check("preferencia desligada cala mensagem", !await avisoPermitido(mailboxPush, { titulo: "Teste", corpo: "Teste" }));
+  check("alerta de seguranca ignora silencio da caixa", await avisoPermitido(mailboxPush, { titulo: "Teste", corpo: "Teste", tipo: "seguranca" }));
+  await prisma.mailboxSettings.update({ where: { mailboxId: mailboxPush }, data: { notifyEnabled: true, notifyOnlyInbox: true, notifyQuietStart: 22, notifyQuietEnd: 7 } });
+  check("regra de pasta cala mensagem arquivada", !await avisoPermitido(mailboxPush, { titulo: "Teste", corpo: "Teste", naEntrada: false }, new Date("2035-01-01T15:00:00Z")));
+  check("silencio atravessa meia noite no fuso da operacao", !await avisoPermitido(mailboxPush, { titulo: "Teste", corpo: "Teste" }, new Date("2035-01-02T03:00:00Z")));
+  check("fim do silencio libera mensagem", await avisoPermitido(mailboxPush, { titulo: "Teste", corpo: "Teste" }, new Date("2035-01-02T12:00:00Z")));
+  await prisma.mailboxSettings.update({ where: { mailboxId: mailboxPush }, data: { notifyQuietStart: null, notifyQuietEnd: null } });
+})();
+
 // Sem credencial, nada existe.
 const semAuth = await fetch(`${baseDav}/dav/`, { method: "PROPFIND" });
 check("PROPFIND sem credencial leva 401", semAuth.status === 401);
