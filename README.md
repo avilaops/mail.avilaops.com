@@ -66,6 +66,29 @@ senha). Webmail precisa de `SSO_ENABLED=true` (unit do systemd); a API, de
 
 Caddy: so `/api/v1/*` vai para a API; o resto de `/api/*` e BFF do webmail.
 
+### Persistência da sessão Mail
+
+O acesso dura `MAIL_ACCESS_TOKEN_MINUTES` (15 minutos por padrão). O refresh
+tem prazo absoluto de `MAIL_REFRESH_TOKEN_DAYS` (30 dias por padrão), contado
+desde o login: renovar o acesso não prolonga esse prazo. A API devolve o tempo
+restante em `refreshExpiresInSeconds`, usado também nos cookies.
+
+O refresh usa o cookie HttpOnly `avila_mail_rt_v2`, restrito ao host, com
+`Path=/`, `Secure` e `SameSite=Strict`. Páginas, downloads e SSE precisam dele
+para recuperar o acesso. `/api/sessao/retomar` migra o cookie legado de
+`Path=/api/sessao`, inclusive em abas que já estavam abertas. As mutações
+continuam exigindo o token CSRF; um erro temporário da API não apaga a sessão.
+
+A rotação é serializada no PostgreSQL por caixa, entre todas as instâncias.
+Durante 10 segundos, chamadas que apresentam o mesmo refresh rotacionado
+recebem a mesma sucessora. O sucessor é armazenado cifrado para essa recuperação;
+reuso após a janela revoga as sessões. Logout invalida a família do aparelho,
+incluindo tokens anteriores, e nunca permite recuperar uma sessão revogada.
+
+O workflow verifica esse contrato com PostgreSQL e Chromium reais no GitHub
+CI. A migração `20261028060000_session_rotation` faz parte do artefato; sua
+aplicação em produção pertence ao procedimento operacional autorizado.
+
 ## Testes
 
 ```bash

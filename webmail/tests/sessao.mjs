@@ -64,6 +64,10 @@ try {
   browser = await chromium.launch({ headless: true });
   const contexto = await browser.newContext();
   const pagina = await contexto.newPage();
+  pagina.on("requestfailed", (req) => console.error("CI falha de rede", new URL(req.url()).pathname, req.failure()?.errorText));
+  pagina.on("response", (res) => {
+    if (res.status() >= 300 && res.status() < 400) console.log("CI redirect", res.status(), new URL(res.url()).pathname, res.headers().location);
+  });
   const base = "http://127.0.0.1:3041";
   await pagina.goto(`${base}/entrar?local=1`);
   const login = async () => {
