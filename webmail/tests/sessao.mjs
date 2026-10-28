@@ -40,6 +40,7 @@ const backend = createServer(async (req, res) => {
     return responder(200, tokens());
   }
   if (req.url === "/v1/auth/logout") return responder(200, { ok: true });
+  if (req.url === "/v1/auth/sso") return responder(401, { error: { message: "Sessao do SSO revogada.", code: "sso_reauth_required" } });
   const acesso = req.headers.authorization?.replace(/^Bearer /, "");
   if ((acessos.get(acesso) ?? 0) <= Date.now()) return responder(401, { error: { message: "Acesso expirado" } });
   if (req.url === "/v1/me/first-password" && req.method === "POST") {
@@ -85,7 +86,7 @@ const tls = criarProxyHttps({ key: readFileSync(chave), cert: readFileSync(certi
 tls.listen(3441, "127.0.0.1");
 await once(tls, "listening");
 const next = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "-p", "3041"], {
-  env: { ...process.env, COOKIE_SECURE: "true", SSO_ENABLED: "false", AGENDA_ENABLED: "false", WEBMAIL_URL: "https://127.0.0.1:3441", MAIL_API_URL: "http://127.0.0.1:3040/v1" },
+  env: { ...process.env, COOKIE_SECURE: "true", SSO_ENABLED: "true", AUTH_URL: "https://auth.exemplo.test", AGENDA_ENABLED: "false", WEBMAIL_URL: "https://127.0.0.1:3441", MAIL_API_URL: "http://127.0.0.1:3040/v1" },
   stdio: ["ignore", "ignore", "inherit"],
 });
 let browser;
@@ -171,6 +172,29 @@ try {
   assert.ok((await contexto.cookies()).some((cookie) => cookie.name === "avila_mail_trocar"), "marca do primeiro acesso sobrevive a renovacao");
   await pagina.evaluate(() => window.MailCliente.api("/me/first-password", { method: "POST", body: { newPassword: "senha-exclusiva-ci" } }));
   assert.equal((await contexto.cookies()).some((cookie) => cookie.name === "avila_mail_trocar"), false, "marca removida somente apos definir a senha");
+  let saiuDoAuth = 0;
+  let inicioNovoLogin = 0;
+  await pagina.route("https://auth.exemplo.test/**", async (rota) => {
+    const url = new URL(rota.request().url());
+    if (url.pathname === "/api/auth/logout") {
+      assert.equal(rota.request().method(), "POST");
+      saiuDoAuth++;
+      inicioNovoLogin = Date.now();
+      await contexto.clearCookies({ name: "avila_sso" });
+      await rota.fulfill({ status: 303, headers: { Location: `${base}/api/sessao/sso/novo-login` }, body: "" });
+    } else {
+      assert.equal(url.pathname, "/login");
+      assert.ok(Date.now() - inicioNovoLogin >= 1000, "nova prova e solicitada depois da fronteira do segundo");
+      await rota.fulfill({ status: 200, contentType: "text/html", body: "<h1>Novo login Auth</h1>" });
+    }
+  });
+  await contexto.addCookies([{ name: "avila_sso", value: "prova-exclusiva-do-teste-ci", domain: "127.0.0.1", path: "/", httpOnly: true, secure: true }]);
+  await pagina.goto(`${base}/api/sessao/sso`);
+  assert.equal(new URL(pagina.url()).pathname, "/api/sessao/sso/reautenticar", "cookie revogado tem recuperacao explicita");
+  assert.equal(saiuDoAuth, 0, "recuperacao nao encerra sessao global sem clique");
+  await pagina.getByRole("button", { name: "Encerrar sessao anterior e entrar novamente" }).click();
+  await pagina.waitForURL("https://auth.exemplo.test/login?**");
+  assert.equal(saiuDoAuth, 1);
   console.log("PASSOU — sessao real no navegador: reabertura, renovacao, JSON/download/SSE, recuperacao e cookies");
 } finally {
   await browser?.close();

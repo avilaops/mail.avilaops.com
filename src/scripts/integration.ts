@@ -445,11 +445,14 @@ await (async () => {
     check("Auth pode restabelecer acesso com sessao nova", !("choose" in await loginSso({ ssoToken: cookieAtual })));
     const sessaoStream = await loginSso({ ssoToken: emitir({ sub: "identidade-stream-auth", iat: agora + 5 }) });
     if ("choose" in sessaoStream) throw new Error("Stream esperava uma caixa");
+    const marcaSenhaAnterior = (await prisma.mailbox.findUniqueOrThrow({ where: { id: caixa.id }, select: { mustChangePassword: true } })).mustChangePassword;
+    await prisma.mailbox.update({ where: { id: caixa.id }, data: { mustChangePassword: false } });
     const abortoStream = new AbortController();
     const limiteStream = setTimeout(() => abortoStream.abort(), 12_000);
     const fluxo = await fetch(`${baseReceptor}/v1/me/events`, {
       headers: { Authorization: `Bearer ${sessaoStream.accessToken}` }, signal: abortoStream.signal,
     });
+    check("teste recebe SSE autenticado em vez de pagina ou erro", fluxo.status === 200 && fluxo.headers.get("content-type")?.startsWith("text/event-stream") === true);
     const leitor = fluxo.body!.getReader();
     await leitor.read();
     const proximo = leitor.read();
@@ -460,7 +463,10 @@ await (async () => {
     await enviarSinal(sinal({ sub: "identidade-stream-auth", iat: agora + 5, exp: agora + 125 }));
     let streamEncerrado = false;
     try { streamEncerrado = (await proximo).done === true; } catch { /* timeout nao conta como revogacao */ }
-    finally { clearTimeout(limiteStream); abortoStream.abort(); leitor.releaseLock(); }
+    finally {
+      clearTimeout(limiteStream); abortoStream.abort(); leitor.releaseLock();
+      await prisma.mailbox.update({ where: { id: caixa.id }, data: { mustChangePassword: marcaSenhaAnterior } });
+    }
     check("logout Auth encerra canal SSE ja aberto na proxima verificacao", streamEncerrado);
   } finally {
     if (caixaExtraSso) await prisma.mailbox.delete({ where: { id: caixaExtraSso } });
