@@ -1,6 +1,7 @@
 "use client";
 
 import type { AgendaCalendario, DadosEventoAgenda, EventoAgenda, PreferenciasAgenda } from "@/lib/tipos";
+import { caminhoEntrar, destinoMail } from "./destinoMail";
 
 /**
  * Acesso a API a partir do navegador.
@@ -67,12 +68,13 @@ export async function api<T>(
         : "Erro na requisicao.";
 
     // Sessao morreu enquanto a aba estava aberta: recarregar cai no login.
-    if (resposta.status === 401 || resposta.status === 428) window.location.href = "/entrar";
+    const retorno = destinoMail(`${window.location.pathname}${window.location.search}`);
+    if (resposta.status === 401 || resposta.status === 428) window.location.href = caminhoEntrar(retorno);
 
     // Primeiro acesso: a API recusa tudo (409) ate a senha ser definida. So a
     // propria chamada de definir a senha escapa, senao seria um laco.
     if (resposta.status === 409 && !caminho.startsWith("/me/first-password")) {
-      window.location.href = "/definir-senha";
+      window.location.href = `/definir-senha?${new URLSearchParams({ returnTo: retorno })}`;
     }
 
     throw new ErroApi(mensagem, resposta.status);

@@ -2970,7 +2970,15 @@ await (async () => {
   check("desligar aqui desativa tambem aviso com aba aberta", (await habilitar(a.accessToken, false)).status === 200 && (await estadoA()).habilitadoAqui === false);
   check("dois aparelhos autorizam push independentemente", (await registrar(a.accessToken, endpointA)).status === 201 &&
     (await registrar(b.accessToken, endpointB)).status === 201);
+  const conferirEstadoA = await (await fetch(`${baseAgendaApi}/v1/me/push`, { headers: { Authorization: `Bearer ${a.accessToken}` } })).json() as { aparelhos: Array<{ endpoint: string; nesteAparelho: boolean }> };
+  check("estado remoto distingue autorizacao deste login", conferirEstadoA.aparelhos.find((item) => item.endpoint === endpointA)?.nesteAparelho === true &&
+    conferirEstadoA.aparelhos.find((item) => item.endpoint === endpointB)?.nesteAparelho === false);
+  check("envio de teste informa indisponibilidade sem VAPID", (await fetch(`${baseAgendaApi}/v1/me/push/test`, { method: "POST", headers: { Authorization: `Bearer ${a.accessToken}` } })).status === 503);
   Object.assign(configPush.push, transportePush.generateVAPIDKeys());
+  entregasPush.length = 0;
+  const respostaTestePush = await fetch(`${baseAgendaApi}/v1/me/push/test`, { method: "POST", headers: { Authorization: `Bearer ${a.accessToken}` } });
+  const resultadoTestePush = await respostaTestePush.json() as { tentativas: number; enviados: number };
+  check("teste vai somente ao proprio aparelho e informa aceite do provedor", respostaTestePush.status === 200 && resultadoTestePush.enviados === 1 && resultadoTestePush.tentativas === 1 && entregasPush.join() === endpointA);
   const capturarEnvio = async () => {
     entregasPush.length = 0;
     await enviarAviso(mailboxPush, { titulo: "Contrato de entrega", corpo: "Teste CI", tipo: "seguranca" });

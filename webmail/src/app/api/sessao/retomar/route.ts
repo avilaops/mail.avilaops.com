@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { chamarComSessao, origemDaRequisicao } from "@/lib/api";
 import { csrfValido, limparSessao } from "@/lib/sessao";
 import { webmailBase } from "@/lib/sso";
+import { caminhoEntrar, destinoMail } from "@/lib/destinoMail";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,12 +19,12 @@ export async function GET(request: NextRequest) {
   if (resposta.ok) return NextResponse.redirect(permitido ? destino : new URL("/caixa", base));
   if (resposta.status === 409) {
     if (destinoApi) return NextResponse.json({ erro: resposta.erro }, { status: 409 });
-    return NextResponse.redirect(new URL("/definir-senha", base));
+    return NextResponse.redirect(new URL(`/definir-senha?${new URLSearchParams({ returnTo: destinoMail(pedido) })}`, base));
   }
   if (resposta.status === 401) {
     await limparSessao();
     if (destinoApi) return NextResponse.json({ erro: "Sessao encerrada." }, { status: 401 });
-    return NextResponse.redirect(new URL("/entrar", base));
+    return NextResponse.redirect(new URL(caminhoEntrar(destinoMail(pedido)), base));
   }
   return NextResponse.json({ erro: "Nao foi possivel restaurar sua sessao. Tente novamente." }, {
     status: resposta.status, headers: { "Cache-Control": "no-store", "Retry-After": "5" },

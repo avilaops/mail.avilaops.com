@@ -140,12 +140,14 @@ export async function removerInscricao(mailboxId: string, endpoint: string): Pro
   return { ok: true };
 }
 
-export async function listarInscricoes(mailboxId: string) {
-  return prisma.mailPushSubscription.findMany({
+export async function listarInscricoes(mailboxId: string, sessionId?: string) {
+  const familiaAtual = sessionId ? await sessaoDoAparelho(prisma, mailboxId, sessionId) : null;
+  const inscricoes = await prisma.mailPushSubscription.findMany({
     where: { mailboxId, familyId: { in: await familiasAtivas(mailboxId) } },
     orderBy: { createdAt: "desc" },
-    select: { id: true, endpoint: true, userAgent: true, lastSentAt: true, createdAt: true },
+    select: { id: true, endpoint: true, familyId: true, userAgent: true, lastSentAt: true, createdAt: true },
   });
+  return inscricoes.map(({ familyId, ...inscricao }) => ({ ...inscricao, nesteAparelho: familyId === familiaAtual }));
 }
 
 export interface AvisoPush {
@@ -212,10 +214,21 @@ export async function avisoPermitido(mailboxId: string, aviso: AvisoPush, agora 
 export async function enviarAviso(mailboxId: string, aviso: AvisoPush): Promise<{ tentativas: number; enviados: number }> {
   if (!pushDisponivel()) return { tentativas: 0, enviados: 0 };
   if (!(await avisoPermitido(mailboxId, aviso))) return { tentativas: 0, enviados: 0 };
-  garantirConfiguracao();
+  return enviarParaAparelhos(mailboxId, aviso);
+}
 
+/** Teste solicitado pelo usuario, somente para o aparelho desta sessao. */
+export async function testarAviso(mailboxId: string, sessionId: string): Promise<{ tentativas: number; enviados: number }> {
+  if (!pushDisponivel()) throw new AuthError("Aviso em segundo plano indisponivel no servidor.", 503);
+  const familia = await sessaoDoAparelho(prisma, mailboxId, sessionId);
+  return enviarParaAparelhos(mailboxId, { titulo: "Teste de aviso Ávila Mail", corpo: "O aviso deste aparelho está funcionando.", url: "/conta", notificationTag: "mail:teste" }, familia);
+}
+
+async function enviarParaAparelhos(mailboxId: string, aviso: AvisoPush, somenteFamilia?: string): Promise<{ tentativas: number; enviados: number }> {
+  garantirConfiguracao();
+  const familias = (await familiasAtivas(mailboxId)).filter((id) => !somenteFamilia || id === somenteFamilia);
   const inscricoes = await prisma.mailPushSubscription.findMany({
-    where: { mailboxId, familyId: { in: await familiasAtivas(mailboxId) } },
+    where: { mailboxId, familyId: { in: familias } },
     select: { id: true, endpoint: true, p256dh: true, auth: true },
   });
   if (inscricoes.length === 0) return { tentativas: 0, enviados: 0 };

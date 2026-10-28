@@ -42,7 +42,7 @@ import { createFolder, deleteFolder, renameFolder } from "../services/folders.js
 import { createRule, deleteRule, listRules, updateRule } from "../services/rules.js";
 import { autenticarChave, criarChave, ehAdministrador, escopoDoToken, listarChaves, revogarChave, type ApiKeyScope } from "../services/apiKeys.js";
 import { handleAdminRoute } from "./admin-routes.js";
-import { avisoPermitido, avisosHabilitadosAqui, habilitarAvisosAqui, chavePublica, listarInscricoes, pushDisponivel, registrarInscricao, removerInscricao } from "../services/push.js";
+import { avisoPermitido, avisosHabilitadosAqui, habilitarAvisosAqui, chavePublica, listarInscricoes, pushDisponivel, registrarInscricao, removerInscricao, testarAviso } from "../services/push.js";
 import { receberLogoutSso, receberSinalSso } from "../services/ssoRevocation.js";
 import { getCalendarSettings, getSettings, updateCalendarSettings, updateProfile, updateSettings } from "../services/settings.js";
 import { listSendAs, searchContacts } from "../services/contacts.js";
@@ -524,7 +524,7 @@ export async function handleUserRoute(
     json(res, 200, {
       disponivel: pushDisponivel(),
       chavePublica: chavePublica(),
-      aparelhos: await listarInscricoes(sessao.mailboxId),
+      aparelhos: await listarInscricoes(sessao.mailboxId, sessao.sessionId),
       habilitadoAqui: await avisosHabilitadosAqui(sessao.mailboxId, sessao.sessionId),
     });
     return true;
@@ -539,6 +539,11 @@ export async function handleUserRoute(
   if (path === "/v1/me/push" && method === "PUT") {
     const input = z.object({ enabled: z.boolean() }).parse(await readBody(req));
     json(res, 200, await habilitarAvisosAqui(sessao.mailboxId, sessao.sessionId, input.enabled));
+    return true;
+  }
+
+  if (path === "/v1/me/push/test" && method === "POST") {
+    json(res, 200, await testarAviso(sessao.mailboxId, sessao.sessionId));
     return true;
   }
 

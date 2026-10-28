@@ -59,9 +59,11 @@ export function AvisosDeMensagem() {
   const [inscritoAqui, setInscritoAqui] = useState(false);
   const [ocupado, setOcupado] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  const [resultadoTeste, setResultadoTeste] = useState<string | null>(null);
   const [prefs, setPrefs] = useState<Preferencias | null>(null);
 
   const carregar = useCallback(async () => {
+    setPermissao(estadoDaPermissao());
     const [dados, preferencias] = await Promise.all([
       api<EstadoPush>("/me/push"),
       api<Preferencias>("/me/settings"),
@@ -69,7 +71,7 @@ export function AvisosDeMensagem() {
     setEstado(dados);
     setPrefs(preferencias);
     const local = await inscricaoAtual();
-    setInscritoAqui(Boolean(dados.disponivel && dados.chavePublica && dados.habilitadoAqui && local && dados.aparelhos.some((aparelho) => aparelho.endpoint === local.endpoint)));
+    setInscritoAqui(Boolean(dados.disponivel && dados.chavePublica && dados.habilitadoAqui && local && dados.aparelhos.some((aparelho) => aparelho.nesteAparelho && aparelho.endpoint === local.endpoint)));
   }, []);
 
   /** Salva na hora: preferência de aviso com botão "Salvar" é esquecida ligada. */
@@ -89,6 +91,9 @@ export function AvisosDeMensagem() {
   useEffect(() => {
     setPermissao(estadoDaPermissao());
     void carregar().catch((falha) => setErro(falha instanceof Error ? falha.message : "Falha ao carregar."));
+    const atualizar = () => { void carregar().catch((falha) => setErro(falha instanceof Error ? falha.message : "Falha ao atualizar os avisos.")); };
+    window.addEventListener("focus", atualizar);
+    return () => window.removeEventListener("focus", atualizar);
   }, [carregar]);
 
   async function ligarNesteAparelho() {
@@ -144,6 +149,7 @@ export function AvisosDeMensagem() {
           {erro}
         </p>
       )}
+      {resultadoTeste && <p role="status" className="text-sm">{resultadoTeste}</p>}
 
       <div className="rounded-lg border border-[var(--color-borda)] px-4 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -185,6 +191,26 @@ export function AvisosDeMensagem() {
           </p>
         )}
       </div>
+
+      {habilitadoAqui && !inscritoAqui && suportaPush() && estado?.disponivel && estado.chavePublica && (
+        <button type="button" className={BOTAO} disabled={ocupado} onClick={() => void ligarNesteAparelho()}>
+          Ativar em segundo plano
+        </button>
+      )}
+      {inscritoAqui && (
+        <button type="button" className={BOTAO_LEVE} disabled={ocupado} onClick={() => {
+          setOcupado(true); setErro(null); setResultadoTeste(null);
+          void api<{ tentativas: number; enviados: number }>("/me/push/test", { method: "POST" })
+            .then(async (resultado) => {
+              setResultadoTeste(resultado.enviados > 0
+                ? "O serviço do navegador aceitou o aviso. Confira se ele apareceu neste aparelho."
+                : "Nenhum aviso foi aceito. Ative novamente este aparelho e tente outra vez.");
+              await carregar();
+            })
+            .catch((falha) => setErro(falha instanceof Error ? falha.message : "Não foi possível testar o aviso."))
+            .finally(() => setOcupado(false));
+        }}>Enviar aviso de teste</button>
+      )}
 
       {prefs && (
         <div className="space-y-3 rounded-lg border border-[var(--color-borda)] px-4 py-3">

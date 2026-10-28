@@ -20,7 +20,7 @@ let mutacoes = 0;
 let falhaPush = false;
 const endpointPush = "https://push.exemplo.test/navegador-ci";
 const estadoPush = { disponivel: true, chavePublica: "chave-publica-ci", habilitadoAqui: true,
-  aparelhos: [{ id: "aparelho-ci", endpoint: endpointPush, userAgent: "Chromium CI", lastSentAt: null, createdAt: "2026-10-28T00:00:00Z" }] };
+  aparelhos: [{ id: "aparelho-ci", endpoint: endpointPush, nesteAparelho: true, userAgent: "Chromium CI", lastSentAt: null, createdAt: "2026-10-28T00:00:00Z" }] };
 const mailbox = { id: "teste", address: "teste@exemplo.test", displayName: "Teste", quotaBytes: "1000", usedBytes: "0", mustChangePassword: false };
 function tokens() {
   const accessToken = `acesso-${++sequencia}`;

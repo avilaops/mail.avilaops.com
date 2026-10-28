@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { chamarApi } from "@/lib/api";
 import { ssoAtivo, tokenSso, urlLoginSso } from "@/lib/sso";
 import { Marca } from "@/components/Marca";
+import { caminhoEntrar, destinoMail } from "@/lib/destinoMail";
 
 export const dynamic = "force-dynamic";
 
@@ -47,18 +48,20 @@ function iniciais(caixa: Caixa): string {
  * empresa, depois a caixa. Cada linha é um alvo de toque inteiro, com nome em
  * destaque e endereço embaixo, porque o nome é o que a pessoa reconhece.
  */
-export default async function EscolherCaixa() {
-  if (!ssoAtivo()) redirect("/entrar?local=1");
+export default async function EscolherCaixa({ searchParams }: { searchParams: Promise<{ returnTo?: string }> }) {
+  const destino = destinoMail((await searchParams).returnTo);
+  const retorno = new URLSearchParams({ returnTo: destino });
+  if (!ssoAtivo()) redirect(caminhoEntrar(destino, true));
   const token = await tokenSso();
-  if (!token) redirect(urlLoginSso());
+  if (!token) redirect(urlLoginSso(destino));
 
   const resposta = await chamarApi<RespostaEscolha | { accessToken: string }>("/auth/sso", {
     method: "POST",
     body: { ssoToken: token },
   });
 
-  if (!resposta.ok || !resposta.dados) redirect("/entrar?erro=sem_caixa");
-  if (!("choose" in resposta.dados)) redirect("/api/sessao/sso");
+  if (!resposta.ok || !resposta.dados) redirect(`/entrar?erro=sem_caixa&${retorno}`);
+  if (!("choose" in resposta.dados)) redirect(`/api/sessao/sso?${retorno}`);
 
   const grupos = agruparPorDominio(resposta.dados.choose);
   const total = resposta.dados.choose.length;
@@ -87,7 +90,7 @@ export default async function EscolherCaixa() {
                 {grupo.caixas.map((caixa) => (
                   <li key={caixa.address}>
                     <a
-                      href={`/api/sessao/sso?address=${encodeURIComponent(caixa.address)}`}
+                      href={`/api/sessao/sso?${new URLSearchParams({ address: caixa.address, returnTo: destino })}`}
                       className="flex items-center gap-3 px-4 py-3.5 transition hover:bg-[var(--color-hover-suave)] active:bg-[var(--color-fundo-suave)]"
                     >
                       <span
@@ -125,7 +128,7 @@ export default async function EscolherCaixa() {
         </div>
 
         <div className="mt-8 flex flex-col items-center gap-2 text-xs text-[var(--color-texto-fraco)]">
-          <a href="/entrar?local=1" className="underline underline-offset-2 hover:text-[var(--color-tinta)]">
+          <a href={caminhoEntrar(destino, true)} className="underline underline-offset-2 hover:text-[var(--color-tinta)]">
             Entrar com a senha da caixa
           </a>
           <a href="/configurar" className="underline underline-offset-2 hover:text-[var(--color-tinta)]">

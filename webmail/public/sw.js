@@ -36,13 +36,18 @@ self.addEventListener("notificationclick", (evento) => {
 
   const id = evento.notification.data && evento.notification.data.messageId;
   const url = evento.notification.data && evento.notification.data.url;
-  const destino = url || (id ? `/caixa?mensagem=${encodeURIComponent(id)}` : "/caixa");
+  const padrao = id ? `/caixa?mensagem=${encodeURIComponent(id)}` : "/caixa";
+  let destino = padrao;
+  try {
+    const candidato = new URL(url || padrao, self.location.origin);
+    if (candidato.origin === self.location.origin && ["/caixa", "/agenda", "/conta"].includes(candidato.pathname)) destino = `${candidato.pathname}${candidato.search}`;
+  } catch { /* Usa o destino interno da mensagem. */ }
 
   // Reaproveita a aba já aberta do webmail em vez de abrir a décima cópia.
   evento.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((janelas) => {
       for (const janela of janelas) {
-        if (janela.url.includes(url ? "/agenda" : "/caixa")) {
+        if (new URL(janela.url).origin === self.location.origin) {
           return janela.focus()
             .then(() => (url || id) && "navigate" in janela ? janela.navigate(destino) : undefined)
             .then(() => undefined)

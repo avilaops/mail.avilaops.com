@@ -69,10 +69,11 @@ function cabecalhoEncaminhamento(mensagem: MensagemCompleta): string {
 
 const PREFIXO_ENCAMINHAMENTO = /^(fwd|enc|fw)\s*:/i;
 
-export function PainelCaixa({ agendaHabilitada = true }: { agendaHabilitada?: boolean }) {
+export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agendaHabilitada?: boolean; mensagemInicial?: string }) {
   const router = useRouter();
   const [caixa, setCaixa] = useState<Caixa | null>(null);
   const [pastas, setPastas] = useState<Pasta[]>([]);
+  const pastasAtuais = useRef<Pasta[]>([]);
   const [pastaAtual, setPastaAtual] = useState("inbox");
   const [pastaRestaurada, setPastaRestaurada] = useState(false);
 
@@ -106,6 +107,7 @@ export function PainelCaixa({ agendaHabilitada = true }: { agendaHabilitada?: bo
   const [apagadaRecente, setApagadaRecente] = useState<{ ids: string[]; pastaOrigemId: string } | null>(null);
   const temporizadorApagar = useRef<number | null>(null);
   const [vista, setVista] = useState<Vista>("lista");
+  const avisoAberto = useRef<string | null>(null);
 
   const [composicao, setComposicao] = useState<ContextoComposicao | null>(null);
 
@@ -120,6 +122,7 @@ export function PainelCaixa({ agendaHabilitada = true }: { agendaHabilitada?: bo
   const carregarPastas = useCallback(async () => {
     try {
       const dados = await api<{ folders: Pasta[] }>("/me/folders");
+      pastasAtuais.current = dados.folders;
       setPastas(dados.folders);
     } catch (falha) {
       setErro(falha instanceof Error ? falha.message : "Falha ao carregar pastas.");
@@ -268,17 +271,25 @@ export function PainelCaixa({ agendaHabilitada = true }: { agendaHabilitada?: bo
   // --- Leitura ---
 
   const abrir = useCallback(
-    async (id: string, comImagens = false) => {
+    async (id: string, comImagens = false, peloAviso = false) => {
       setSelecionada(id);
       setCarregandoLeitura(true);
       setVista("leitura");
 
       try {
-        const mensagem = await api<MensagemCompleta>(`/me/messages/${id}?images=${comImagens}`);
+        const mensagem = await api<MensagemCompleta>(`/me/messages/${encodeURIComponent(id)}?images=${comImagens}`);
+        const pastaDaMensagem = pastasAtuais.current.find((pasta) => pasta.id === mensagem.folderId);
+        if (peloAviso) {
+          const destino = pastaDaMensagem?.kind === "custom" ? mensagem.folderId : pastaDaMensagem?.kind ?? mensagem.folderId;
+          setPastaAtual(destino);
+          window.sessionStorage.setItem("avila-mail-pasta", destino);
+          setBusca("");
+          setFiltro("todas");
+        }
 
         // Rascunho não se lê: retoma-se. Abrir no leitor deixaria o cliente
         // olhando o próprio texto sem conseguir continuar de onde parou.
-        if (emRascunhos) {
+        if (pastaDaMensagem?.kind === "drafts" || (!peloAviso && emRascunhos)) {
           setComposicao({
             tipo: "rascunho",
             draftId: mensagem.id,
@@ -305,6 +316,7 @@ export function PainelCaixa({ agendaHabilitada = true }: { agendaHabilitada?: bo
             .catch(() => setConversa(null));
         }
       } catch (falha) {
+        setAberta(null);
         setErro(falha instanceof Error ? falha.message : "Falha ao abrir a mensagem.");
       } finally {
         setCarregandoLeitura(false);
@@ -312,6 +324,12 @@ export function PainelCaixa({ agendaHabilitada = true }: { agendaHabilitada?: bo
     },
     [carregarPastas, emRascunhos],
   );
+
+  useEffect(() => {
+    if (!mensagemInicial || !pastaRestaurada || carregandoLista || !caixa || avisoAberto.current === mensagemInicial) return;
+    avisoAberto.current = mensagemInicial;
+    void abrir(mensagemInicial, false, true);
+  }, [mensagemInicial, pastaRestaurada, carregandoLista, caixa, abrir]);
 
   /** Some da lista e fecha o painel — usado por apagar, spam e mover. */
   const removerDaLista = useCallback((ids: string[]) => {
@@ -564,7 +582,7 @@ export function PainelCaixa({ agendaHabilitada = true }: { agendaHabilitada?: bo
           fromAddress: m.fromAddress,
           subject: m.subject,
         })),
-        (id) => void abrir(id),
+        (id) => void abrir(id, false, true),
         dados.notify === true,
       );
       // So mexe na lista se o cliente estiver olhando a Entrada sem recorte.

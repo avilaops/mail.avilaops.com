@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { chamarApi, origemDaRequisicao } from "@/lib/api";
 import { gravarSessao } from "@/lib/sessao";
 import { ssoAtivo, tokenSso, urlLoginSso, webmailBase } from "@/lib/sso";
+import { destinoMail } from "@/lib/destinoMail";
 
 /**
  * Ingestao da sessao do SSO.
@@ -28,10 +29,12 @@ export async function GET(request: NextRequest) {
   // Nunca derivar de `request.nextUrl`: atras do proxy o host e o interno
   // (localhost:3041) e o Location sairia apontando para a maquina do usuario.
   const base = webmailBase();
-  if (!ssoAtivo()) return NextResponse.redirect(`${base}/entrar?local=1`);
+  const destino = destinoMail(request.nextUrl.searchParams.get("returnTo"));
+  const retorno = new URLSearchParams({ returnTo: destino });
+  if (!ssoAtivo()) return NextResponse.redirect(`${base}/entrar?local=1&${retorno}`);
 
   const token = await tokenSso();
-  if (!token) return NextResponse.redirect(urlLoginSso());
+  if (!token) return NextResponse.redirect(urlLoginSso(destino));
 
   const address = request.nextUrl.searchParams.get("address") ?? undefined;
   const resposta = await chamarApi<RespostaLogin | RespostaEscolha>("/auth/sso", {
@@ -42,19 +45,19 @@ export async function GET(request: NextRequest) {
   });
 
   if (!resposta.ok || !resposta.dados) {
-    if (resposta.codigo === "sso_reauth_required") return NextResponse.redirect(`${base}/api/sessao/sso/reautenticar`);
-    if (resposta.status === 428) return NextResponse.redirect(urlLoginSso());
+    if (resposta.codigo === "sso_reauth_required") return NextResponse.redirect(`${base}/api/sessao/sso/reautenticar?${retorno}`);
+    if (resposta.status === 428) return NextResponse.redirect(urlLoginSso(destino));
     const motivo = resposta.status === 404 ? "sem_caixa" : resposta.status === 403 ? "caixa_indisponivel" : "sso_invalido";
-    const q = new URLSearchParams({ erro: motivo });
+    const q = new URLSearchParams({ erro: motivo, returnTo: destino });
     if (resposta.erro) q.set("detalhe", resposta.erro);
     return NextResponse.redirect(`${base}/entrar?${q}`);
   }
 
   if ("choose" in resposta.dados) {
-    return NextResponse.redirect(`${base}/entrar/caixas`);
+    return NextResponse.redirect(`${base}/entrar/caixas?${retorno}`);
   }
 
   const trocar = resposta.dados.mailbox.mustChangePassword === true;
   await gravarSessao(resposta.dados, { precisaTrocarSenha: trocar });
-  return NextResponse.redirect(`${base}/${trocar ? "definir-senha" : "caixa"}`);
+  return NextResponse.redirect(trocar ? `${base}/definir-senha?${retorno}` : `${base}${destino}`);
 }
