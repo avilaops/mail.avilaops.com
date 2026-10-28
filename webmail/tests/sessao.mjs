@@ -7,6 +7,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright";
+import { build } from "esbuild";
 
 // Somente GitHub CI: navegador e Next reais; a API controlada permite vencer
 // o acesso sem aguardar quinze minutos ou usar credenciais de produção.
@@ -14,13 +15,15 @@ const acessos = new Map();
 const refreshes = new Set();
 let indisponivel = false;
 let sequencia = 0;
+let primeiraSenha = false;
+let mutacoes = 0;
 const mailbox = { id: "teste", address: "teste@exemplo.test", displayName: "Teste", quotaBytes: "1000", usedBytes: "0", mustChangePassword: false };
 function tokens() {
   const accessToken = `acesso-${++sequencia}`;
   const refreshToken = `refresh-${sequencia}`;
   acessos.set(accessToken, Date.now() + 2_000);
   refreshes.add(refreshToken);
-  return { accessToken, refreshToken, expiresInSeconds: 2, refreshExpiresInSeconds: 3600, mailbox };
+  return { accessToken, refreshToken, expiresInSeconds: 2, refreshExpiresInSeconds: 3600, mailbox: { ...mailbox, mustChangePassword: primeiraSenha } };
 }
 const backend = createServer(async (req, res) => {
   const partes = [];
@@ -39,6 +42,15 @@ const backend = createServer(async (req, res) => {
   if (req.url === "/v1/auth/logout") return responder(200, { ok: true });
   const acesso = req.headers.authorization?.replace(/^Bearer /, "");
   if ((acessos.get(acesso) ?? 0) <= Date.now()) return responder(401, { error: { message: "Acesso expirado" } });
+  if (req.url === "/v1/me/first-password" && req.method === "POST") {
+    primeiraSenha = false;
+    return responder(200, { ok: true });
+  }
+  if (primeiraSenha && req.url !== "/v1/me/first-password") return responder(409, { error: { message: "Defina a senha" } });
+  if (req.url === "/v1/me/messages/mark-all-read" && req.method === "POST") {
+    mutacoes++;
+    return responder(200, { ok: true });
+  }
   if (req.url === "/v1/me/events") {
     res.writeHead(200, { "content-type": "text/event-stream" });
     return res.end("event: ready\ndata: {}\n\n");
@@ -85,6 +97,10 @@ try {
   }
   browser = await chromium.launch({ headless: true });
   const contexto = await browser.newContext({ ignoreHTTPSErrors: true });
+  // Executar o cliente real permite verificar a repeticao de mutacoes, sem
+  // criar uma pagina de teste dentro da aplicacao ou copiar sua logica.
+  const cliente = await build({ entryPoints: ["src/lib/cliente.ts"], bundle: true, write: false, format: "iife", globalName: "MailCliente", logLevel: "silent" });
+  await contexto.addInitScript({ content: cliente.outputFiles[0].text });
   const pagina = await contexto.newPage();
   const base = "https://127.0.0.1:3441";
   await pagina.goto(`${base}/entrar?local=1`);
@@ -135,6 +151,26 @@ try {
     await contexto.addCookies([{ name: "avila_mail_rt", value: sessaoAntiga.refreshToken, domain: "127.0.0.1", path: "/api/sessao", httpOnly: true, sameSite: "Strict" }]);
     assert.equal((await pedir(caminho)).status, 200, "aba ja aberta recupera cookie legado pela API");
   }
+  await contexto.clearCookies();
+  const antesDeMutar = tokens();
+  await contexto.addCookies([
+    { name: "avila_mail_rt", value: antesDeMutar.refreshToken, domain: "127.0.0.1", path: "/api/sessao", httpOnly: true, secure: true, sameSite: "Strict" },
+    { name: "avila_mail_csrf", value: "csrf-exclusivo-ci", domain: "127.0.0.1", path: "/", secure: true, sameSite: "Strict" },
+  ]);
+  const csrfAntes = (await contexto.cookies()).find((cookie) => cookie.name === "avila_mail_csrf").value;
+  await pagina.evaluate(() => window.MailCliente.api("/me/messages/mark-all-read", { method: "POST", body: { folder: "inbox" } }));
+  assert.equal(mutacoes, 1, "cliente real renova e repete a mutacao uma unica vez");
+  assert.equal((await contexto.cookies()).find((cookie) => cookie.name === "avila_mail_csrf").value, csrfAntes, "renovacao preserva CSRF em requests concorrentes");
+  assert.equal(await pagina.evaluate(async () => (await fetch("/api/sessao/retomar", { method: "POST" })).status), 403, "ponte de mutacao exige CSRF");
+
+  primeiraSenha = true;
+  await contexto.clearCookies();
+  const primeiroAcesso = tokens();
+  await contexto.addCookies([{ name: "avila_mail_rt", value: primeiroAcesso.refreshToken, domain: "127.0.0.1", path: "/api/sessao", httpOnly: true, secure: true, sameSite: "Strict" }]);
+  assert.equal((await pedir("/api/mail/me")).status, 409, "ponte preserva 409 de primeiro acesso para o cliente");
+  assert.ok((await contexto.cookies()).some((cookie) => cookie.name === "avila_mail_trocar"), "marca do primeiro acesso sobrevive a renovacao");
+  await pagina.evaluate(() => window.MailCliente.api("/me/first-password", { method: "POST", body: { newPassword: "senha-exclusiva-ci" } }));
+  assert.equal((await contexto.cookies()).some((cookie) => cookie.name === "avila_mail_trocar"), false, "marca removida somente apos definir a senha");
   console.log("PASSOU — sessao real no navegador: reabertura, renovacao, JSON/download/SSE, recuperacao e cookies");
 } finally {
   await browser?.close();
