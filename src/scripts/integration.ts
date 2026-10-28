@@ -427,9 +427,14 @@ await (async () => {
     });
     const leitor = fluxo.body!.getReader();
     await leitor.read();
+    const proximo = leitor.read();
+    const fechouAntes = await Promise.race([
+      proximo.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 150)),
+    ]);
+    check("SSE permanece aberto antes da revogacao", !fechouAntes);
     await enviarSinal(sinal({ sub: "identidade-stream-auth" }));
     let streamEncerrado = false;
-    try { streamEncerrado = (await leitor.read()).done === true; } catch { /* timeout nao conta como revogacao */ }
+    try { streamEncerrado = (await proximo).done === true; } catch { /* timeout nao conta como revogacao */ }
     finally { clearTimeout(limiteStream); abortoStream.abort(); leitor.releaseLock(); }
     check("logout Auth encerra canal SSE ja aberto na proxima verificacao", streamEncerrado);
   } finally {

@@ -66,6 +66,10 @@ senha). Webmail precisa de `SSO_ENABLED=true` (unit do systemd); a API, de
 
 Caddy: so `/api/v1/*` vai para a API; o resto de `/api/*` e BFF do webmail.
 
+O [contrato Auth–Mail](docs/contrato-auth-mail.md) detalha a conferência atual de
+acesso/MFA, o prazo SSO limitado ao emissor, o receptor de revogação assinada e
+a reautenticação única das sessões anteriores à identificação de sua origem.
+
 ### Persistência da sessão Mail
 
 O acesso dura `MAIL_ACCESS_TOKEN_MINUTES` (15 minutos por padrão). O refresh
