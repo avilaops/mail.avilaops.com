@@ -290,6 +290,65 @@ await esperaErro("ancestral do logout global continua recusado", () => refresh({
 const novoLoginPreservado = await refresh({ refreshToken: depoisDoLogoutGlobal.refreshToken }).catch(() => null);
 check("ancestral apos logout global nao derruba novo login", novoLoginPreservado !== null);
 
+console.log("\n[5b] Contrato do SSO com politica atual e prazo do emissor");
+await (async () => {
+  const { createServer } = await import("node:http");
+  const { default: jwtContrato } = await import("jsonwebtoken");
+  const { loginSso } = await import("../services/session.js");
+  const segredo = "segredo-sso-exclusivo-do-teste-de-contrato";
+  const antigas = { segredo: process.env.SSO_JWT_SECRET, auth: process.env.MAIL_AUTH_URL };
+  process.env.SSO_JWT_SECRET = segredo;
+  let politica: "permitido" | "negado" | "mfa" | "indisponivel" = "permitido";
+  let consultas = 0;
+  const emissor = createServer((req, res) => {
+    consultas++;
+    if (politica === "indisponivel") { res.writeHead(503); res.end(); return; }
+    if (politica === "negado") { res.writeHead(200, { "content-type": "text/html" }); res.end("Login sem acesso"); return; }
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const destino = politica === "mfa" ? "/api/auth/mfa/elevar?app=mail" : url.searchParams.get("returnTo")!;
+    res.writeHead(307, { Location: destino });
+    res.end();
+  });
+  await new Promise<void>((resolve) => emissor.listen(0, "127.0.0.1", resolve));
+  process.env.MAIL_AUTH_URL = `http://127.0.0.1:${(emissor.address() as { port: number }).port}`;
+  const agora = Math.floor(Date.now() / 1000);
+  const emitir = (extra: Record<string, unknown> = {}) => jwtContrato.sign({
+    sub: "identidade-auth-contrato", email: "contato@brilhax.com.br", iat: agora - 60, exp: agora + 1800, ...extra,
+  }, segredo, { issuer: "auth.avilaops.com" });
+  const token = emitir();
+  try {
+    politica = "negado";
+    await esperaErro("callback direto nao contorna permissao do Auth", () => loginSso({ ssoToken: token }), "acesso");
+    politica = "mfa";
+    await esperaErro("callback direto nao contorna segundo fator", () => loginSso({ ssoToken: token }), "fator");
+    politica = "permitido";
+    const aberta = await loginSso({ ssoToken: token, ip: "203.0.113.9", userAgent: "SSO contrato" });
+    if ("choose" in aberta) throw new Error("Esperava somente uma caixa no contrato SSO");
+    const persistida = await prisma.mailSession.findUniqueOrThrow({ where: { refreshHash: hashRefresh(aberta.refreshToken) } });
+    check("sessao SSO nao ultrapassa validade emitida pelo Auth", persistida.expiresAt.getTime() <= (agora + 1800) * 1000);
+    politica = "indisponivel";
+    let indisponibilidadePreservada = false;
+    try { await refresh({ refreshToken: aberta.refreshToken }); }
+    catch (erro) { indisponibilidadePreservada = erro instanceof AuthError && erro.statusCode === 503; }
+    check("falha temporaria do Auth preserva status recuperavel", indisponibilidadePreservada);
+    check("falha do Auth nao consome refresh Mail", !(await prisma.mailSession.findUniqueOrThrow({ where: { id: persistida.id } })).revokedAt);
+    politica = "negado";
+    await esperaErro("renovacao confere permissao atual no Auth", () => refresh({ refreshToken: aberta.refreshToken }), "acesso");
+    politica = "permitido";
+    check("sessao recupera apos indisponibilidade sem nova senha", (await refresh({ refreshToken: aberta.refreshToken })).accessToken.length > 0);
+    await esperaErro("SSO sem identidade estavel e rejeitado", () => loginSso({ ssoToken: emitir({ sub: undefined }) }), "invalida");
+    await esperaErro("SSO sem prazo e rejeitado", () => loginSso({ ssoToken: emitir({ exp: undefined }) }), "invalida");
+    await esperaErro("token de outra finalidade nao e cookie SSO", () => loginSso({ ssoToken: emitir({ aud: "outro-cliente" }) }), "invalida");
+    check("Mail consultou o gate real de autorizacao do Auth", consultas >= 5);
+  } finally {
+    emissor.closeAllConnections();
+    await new Promise<void>((resolve) => emissor.close(() => resolve()));
+    for (const [chave, valor] of [["SSO_JWT_SECRET", antigas.segredo], ["MAIL_AUTH_URL", antigas.auth]] as const) {
+      if (valor === undefined) delete process.env[chave]; else process.env[chave] = valor;
+    }
+  }
+})();
+
 console.log("\n[6] Forca bruta: bloqueia o atacante sem trancar o cliente");
 await createMailbox({ domain: "brilhax.com.br", username: "alvo", password: SENHA });
 
