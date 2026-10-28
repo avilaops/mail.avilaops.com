@@ -56,13 +56,21 @@ export async function inscricaoAtual(): Promise<PushSubscription | null> {
   return (await registro?.pushManager.getSubscription()) ?? null;
 }
 
+export function inscricaoConfereChave(inscricao: PushSubscription, chavePublica: string): boolean {
+  try {
+    const atual = inscricao.options.applicationServerKey;
+    const esperada = new Uint8Array(paraBytes(chavePublica));
+    return Boolean(atual && new Uint8Array(atual).length === esperada.length && new Uint8Array(atual).every((byte, indice) => byte === esperada[indice]));
+  } catch {
+    return false;
+  }
+}
+
 export async function inscrever(chavePublica: string): Promise<PushSubscription> {
   const registro = await registrarWorker();
   const existente = await registro.pushManager.getSubscription();
   if (existente) {
-    const atual = existente.options.applicationServerKey;
-    const esperada = new Uint8Array(paraBytes(chavePublica));
-    if (atual && new Uint8Array(atual).length === esperada.length && new Uint8Array(atual).every((byte, indice) => byte === esperada[indice])) return existente;
+    if (inscricaoConfereChave(existente, chavePublica)) return existente;
     if (!await existente.unsubscribe()) throw new Error("Não foi possível atualizar a autorização deste navegador.");
   }
 

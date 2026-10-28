@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/cliente";
 import { estadoDaPermissao, pedirPermissao, type EstadoPermissao } from "@/lib/notificacoes";
-import { desinscrever, inscrever, inscricaoAtual, suportaPush, type EstadoPush } from "@/lib/push";
+import { desinscrever, inscrever, inscricaoAtual, inscricaoConfereChave, suportaPush, type EstadoPush } from "@/lib/push";
 
 interface Preferencias {
   notifyEnabled: boolean;
@@ -71,7 +71,7 @@ export function AvisosDeMensagem() {
     setEstado(dados);
     setPrefs(preferencias);
     const local = await inscricaoAtual();
-    setInscritoAqui(Boolean(dados.disponivel && dados.chavePublica && dados.habilitadoAqui && local && dados.aparelhos.some((aparelho) => aparelho.nesteAparelho && aparelho.endpoint === local.endpoint)));
+    setInscritoAqui(Boolean(dados.disponivel && dados.chavePublica && dados.habilitadoAqui && local && inscricaoConfereChave(local, dados.chavePublica) && dados.aparelhos.some((aparelho) => aparelho.nesteAparelho && aparelho.endpoint === local.endpoint)));
   }, []);
 
   /** Salva na hora: preferência de aviso com botão "Salvar" é esquecida ligada. */

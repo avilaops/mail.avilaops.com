@@ -18,8 +18,10 @@ let sequencia = 0;
 let primeiraSenha = false;
 let mutacoes = 0;
 let falhaPush = false;
+let falhaInscricaoPush = false;
+let modoSso = "revogado";
 const endpointPush = "https://push.exemplo.test/navegador-ci";
-const estadoPush = { disponivel: true, chavePublica: "chave-publica-ci", habilitadoAqui: true,
+const estadoPush = { disponivel: true, chavePublica: "BAECAwQ", habilitadoAqui: true,
   aparelhos: [{ id: "aparelho-ci", endpoint: endpointPush, nesteAparelho: true, userAgent: "Chromium CI", lastSentAt: null, createdAt: "2026-10-28T00:00:00Z" }] };
 const mailbox = { id: "teste", address: "teste@exemplo.test", displayName: "Teste", quotaBytes: "1000", usedBytes: "0", mustChangePassword: false };
 function tokens() {
@@ -44,7 +46,11 @@ const backend = createServer(async (req, res) => {
     return responder(200, tokens());
   }
   if (req.url === "/v1/auth/logout") return responder(200, { ok: true });
-  if (req.url === "/v1/auth/sso") return responder(401, { error: { message: "Sessao do SSO revogada.", code: "sso_reauth_required" } });
+  if (req.url === "/v1/auth/sso") {
+    if (modoSso === "permitido") return responder(200, tokens());
+    if (modoSso === "mfa") return responder(428, { error: { message: "Confirme o segundo fator." } });
+    return responder(401, { error: { message: "Sessao do SSO revogada.", code: "sso_reauth_required" } });
+  }
   const acesso = req.headers.authorization?.replace(/^Bearer /, "");
   if ((acessos.get(acesso) ?? 0) <= Date.now()) return responder(401, { error: { message: "Acesso expirado" } });
   if (req.url === "/v1/me/first-password" && req.method === "POST") {
@@ -67,6 +73,12 @@ const backend = createServer(async (req, res) => {
   if (req.url === "/v1/me") return responder(200, mailbox);
   if (req.url === "/v1/me/settings") return responder(200, { notifyEnabled: true, notifyOnlyInbox: true, notifyQuietStart: null, notifyQuietEnd: null });
   if (req.url === "/v1/me/push") {
+    if (req.method === "POST") {
+      if (falhaInscricaoPush) return responder(503, { error: { message: "Falha controlada ao inscrever" } });
+      estadoPush.habilitadoAqui = true;
+      estadoPush.aparelhos = [{ id: "aparelho-ci", endpoint: input.endpoint, nesteAparelho: true, userAgent: "Chromium CI", lastSentAt: null, createdAt: "2026-10-28T00:00:00Z" }];
+      return responder(201, { ok: true });
+    }
     if (req.method === "PUT") {
       if (falhaPush) return responder(503, { error: { message: "Falha controlada ao desligar" } });
       estadoPush.habilitadoAqui = input.enabled;
@@ -219,21 +231,30 @@ try {
   await pagina.evaluate((endpoint) => {
     const original = Object.getOwnPropertyDescriptor(navigator, "serviceWorker");
     const notificacaoOriginal = window.Notification;
-    window.Notification = class { static permission = "granted"; };
-    Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: {
-      getRegistration: async () => ({ pushManager: { getSubscription: async () => ({ endpoint, unsubscribe: async () => { throw new Error("Falha controlada do navegador"); } }) } }),
-    } });
+    const pushManagerOriginal = window.PushManager;
+    window.permissaoAvisosCi = "granted";
+    window.Notification = class { static get permission() { return window.permissaoAvisosCi; } static async requestPermission() { return window.permissaoAvisosCi; } };
+    const registro = { pushManager: { getSubscription: async () => ({ endpoint, options: { applicationServerKey: new Uint8Array([4, 1, 2, 3, 4]).buffer }, toJSON: () => ({ endpoint, keys: { p256dh: "publica-ci", auth: "auth-ci" } }), unsubscribe: async () => { throw new Error("Falha controlada do navegador"); } }) } };
+    Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: { getRegistration: async () => registro, register: async () => registro, ready: Promise.resolve(registro) } });
     const elemento = document.createElement("div");
     elemento.id = "avisos-reais-ci";
     document.body.append(elemento);
     const desmontar = window.MailAvisosUi.montar(elemento);
     window.limparAvisosCi = () => {
       desmontar(); elemento.remove(); window.Notification = notificacaoOriginal;
+      window.PushManager = pushManagerOriginal;
       if (original) Object.defineProperty(navigator, "serviceWorker", original);
       else delete navigator.serviceWorker;
     };
   }, endpointPush);
   const avisosReais = pagina.locator("#avisos-reais-ci");
+  await avisosReais.getByText("Ligado: você recebe o aviso mesmo com o webmail fechado.", { exact: true }).waitFor();
+  estadoPush.chavePublica = "BgcICQo";
+  await pagina.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await avisosReais.getByRole("button", { name: "Ativar em segundo plano" }).waitFor();
+  assert.equal(await avisosReais.getByText("Ligado: você recebe o aviso mesmo com o webmail fechado.", { exact: true }).count(), 0, "VAPID alterada exige reativacao mesmo com endpoint e familia iguais");
+  estadoPush.chavePublica = "BAECAwQ";
+  await pagina.evaluate(() => window.dispatchEvent(new Event("focus")));
   await avisosReais.getByText("Ligado: você recebe o aviso mesmo com o webmail fechado.", { exact: true }).waitFor();
   falhaPush = true;
   await avisosReais.getByRole("button", { name: "Desligar aqui" }).click();
@@ -244,6 +265,19 @@ try {
   await avisosReais.getByRole("alert").filter({ hasText: "Falha controlada do navegador" }).waitFor();
   assert.equal(estadoPush.habilitadoAqui, false, "falha local nao mantem servidor autorizado");
   assert.equal(await avisosReais.getByRole("button", { name: "Desligar aqui" }).count(), 0, "inscricao local orfa nao aparece como ligada");
+  falhaInscricaoPush = true;
+  await avisosReais.getByRole("button", { name: "Ligar avisos", exact: true }).click();
+  await avisosReais.getByRole("alert").filter({ hasText: "Falha controlada ao inscrever" }).waitFor();
+  assert.equal(await avisosReais.getByRole("button", { name: "Desligar aqui" }).count(), 0, "POST falho nao confirma inscricao orfa");
+  falhaInscricaoPush = false;
+  await avisosReais.getByRole("button", { name: "Ligar avisos", exact: true }).click();
+  await avisosReais.getByText("Ligado: você recebe o aviso mesmo com o webmail fechado.", { exact: true }).waitFor();
+  await pagina.evaluate(() => { window.permissaoAvisosCi = "denied"; window.dispatchEvent(new Event("focus")); });
+  await avisosReais.getByText(/O navegador está bloqueando avisos/).waitFor();
+  assert.equal(await avisosReais.getByRole("button", { name: "Ligar avisos", exact: true }).isDisabled(), true);
+  await pagina.evaluate(() => { window.permissaoAvisosCi = "granted"; delete window.PushManager; window.dispatchEvent(new Event("focus")); });
+  await avisosReais.getByText(/Ligado com o webmail aberto/).waitFor();
+  assert.equal(await avisosReais.getByRole("button", { name: "Enviar aviso de teste" }).count(), 0, "sem PushManager nao promete segundo plano");
   await pagina.evaluate(() => window.limparAvisosCi());
   await pagina.goto(`${base}/caixa?mensagem=aviso-ci`);
   await pagina.getByRole("heading", { name: "Mensagem exata do aviso CI", exact: true }).waitFor();
@@ -251,6 +285,8 @@ try {
   const pedidoSemSessao = await contexto.request.get(`${base}/caixa?mensagem=aviso-ci`, { maxRedirects: 0 });
   const ponteDestino = new URL(pedidoSemSessao.headers().location, base);
   assert.equal(ponteDestino.searchParams.get("returnTo"), "/caixa?mensagem=aviso-ci", "destino do aviso sobrevive a ponte sem sessao");
+  const pedidoAgendaSemSessao = await contexto.request.get(`${base}/agenda?data=2026-10-28&evento=evento-ci.ics`, { maxRedirects: 0 });
+  assert.equal(new URL(pedidoAgendaSemSessao.headers().location, base).searchParams.get("returnTo"), "/agenda?data=2026-10-28&evento=evento-ci.ics", "ocorrencia do lembrete sobrevive ao login");
   await pagina.goto(`${base}/entrar?local=1&returnTo=${encodeURIComponent("/caixa?mensagem=aviso-ci")}`);
   await pagina.getByLabel("Endereço").fill("teste@exemplo.test");
   await pagina.getByLabel("Senha", { exact: true }).fill("somente-ci");
@@ -259,6 +295,25 @@ try {
   assert.equal(new URL(pagina.url()).searchParams.get("mensagem"), "aviso-ci", "login local conserva destino do aviso");
   await pagina.goto(`${base}/caixa?mensagem=aviso-removido`);
   await pagina.getByRole("alert").filter({ hasText: "Mensagem não encontrada." }).waitFor();
+  const retornoAviso = "/caixa?mensagem=aviso-ci";
+  const inicioSsoComDestino = await contexto.request.get(`${base}/entrar?returnTo=${encodeURIComponent(retornoAviso)}`, { maxRedirects: 0 });
+  const callbackComDestino = new URL(new URL(inicioSsoComDestino.headers().location).searchParams.get("returnTo"));
+  assert.equal(callbackComDestino.origin, base);
+  assert.equal(callbackComDestino.searchParams.get("returnTo"), retornoAviso, "SSO conserva destino interno no callback");
+  for (const inseguro of ["https://outro.exemplo.test", "//outro.exemplo.test", "/api/sessao/sair", "/\\outro.exemplo.test"]) {
+    const inicioInseguro = await contexto.request.get(`${base}/entrar?returnTo=${encodeURIComponent(inseguro)}`, { maxRedirects: 0 });
+    assert.equal(new URL(inicioInseguro.headers().location).searchParams.get("returnTo"), `${base}/api/sessao/sso`, "retorno invalido volta ao callback padrao");
+  }
+  await contexto.addCookies([{ name: "avila_sso", value: "prova-exclusiva-do-teste-ci", domain: "127.0.0.1", path: "/", httpOnly: true, secure: true }]);
+  modoSso = "mfa";
+  const fatorSso = await contexto.request.get(callbackComDestino.href, { maxRedirects: 0 });
+  assert.equal(new URL(new URL(fatorSso.headers().location).searchParams.get("returnTo")).searchParams.get("returnTo"), retornoAviso, "MFA conserva destino do aviso");
+  modoSso = "permitido";
+  const callbackPermitido = await contexto.request.get(callbackComDestino.href, { maxRedirects: 0 });
+  assert.equal(callbackPermitido.headers().location, `${base}${retornoAviso}`);
+  await pagina.goto(callbackPermitido.headers().location);
+  await pagina.getByRole("heading", { name: "Mensagem exata do aviso CI", exact: true }).waitFor();
+  modoSso = "revogado";
   let saiuDoAuth = 0;
   let inicioNovoLogin = 0;
   await pagina.route("https://auth.exemplo.test/**", async (rota) => {
