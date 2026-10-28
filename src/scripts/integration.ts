@@ -295,7 +295,7 @@ await (async () => {
   const { createServer } = await import("node:http");
   const { default: jwtContrato } = await import("jsonwebtoken");
   const { loginSso } = await import("../services/session.js");
-  const { generateKeyPairSync, randomUUID } = await import("node:crypto");
+  const { generateKeyPairSync, randomUUID, randomBytes } = await import("node:crypto");
   const { handleUserRoute: rotaContratoSso } = await import("../api/me-routes.js");
   const { fail: falharContrato } = await import("../api/http.js");
   const chaves = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -374,13 +374,23 @@ await (async () => {
     check("logout sem assinatura confiavel e recusado", (await enviarSinal(`${sinal()}adulterado`)).status === 401);
     check("logout de outro cliente e recusado", (await enviarSinal(sinal({ aud: "outro-cliente" }))).status === 401);
     check("logout valido e aceito", (await enviarSinal(sinal())).status === 200);
-    await esperaErro("logout no Auth revoga refresh vinculado", () => refresh({ refreshToken: sessaoAntesDeSair.refreshToken }), "invalida");
+    await esperaErro("logout no Auth revoga refresh vinculado", () => refresh({ refreshToken: sessaoAntesDeSair.refreshToken }), "revogada");
     await esperaErro("cookie Auth anterior nao reabre apos logout", () => loginSso({ ssoToken: token }), "revogada");
     check("logout do Auth nao revoga sessao de senha local", (await refresh({ refreshToken: localPreservada.refreshToken })).accessToken.length > 0);
     check("aviso repetido continua idempotente", (await enviarSinal(sinal())).status === 200);
     const novoCookie = emitir({ iat: agora + 1 });
     const depoisDeSair = await loginSso({ ssoToken: novoCookie });
     check("novo login Auth posterior a revogacao funciona", !("choose" in depoisDeSair));
+    const refreshLegado = randomBytes(48).toString("base64url");
+    const legado = await prisma.mailSession.create({ data: {
+      mailboxId: caixa.id, refreshHash: hashRefresh(refreshLegado), expiresAt: new Date(Date.now() + 86_400_000),
+    } });
+    await esperaErro("sessao anterior sem origem exige reautenticacao unica", () => refresh({ refreshToken: refreshLegado }), "invalida");
+    const { signAccessToken } = await import("../lib/jwt.js");
+    const acessoLegado = signAccessToken({ sub: caixa.id, adr: caixa.address, sid: legado.id });
+    check("access token legado nao contorna a migracao", (await fetch(`${baseReceptor}/v1/me/push`, {
+      headers: { Authorization: `Bearer ${acessoLegado}` },
+    })).status === 401);
   } finally {
     receptor.closeAllConnections();
     await new Promise<void>((resolve) => receptor.close(() => resolve()));
