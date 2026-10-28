@@ -177,11 +177,15 @@ export function importarAgenda(uploadId: string, agendaId?: string): Promise<{ i
 }
 
 export async function sair(): Promise<void> {
-  await fetch("/api/sessao", {
+  const resposta = await fetch("/api/sessao", {
     method: "DELETE",
     headers: { "x-csrf-token": tokenCsrf() },
     credentials: "same-origin",
   });
+  if (!resposta.ok) {
+    const corpo = await resposta.json().catch(() => null) as { erro?: string } | null;
+    throw new ErroApi(corpo?.erro ?? "Não foi possível encerrar a sessão. Tente novamente.", resposta.status);
+  }
   // Ir para "/entrar" nao bastava: com SSO ligado aquela tela devolve para o
   // auth, que ainda tem o cookie de `.avilaops.com`, e a pessoa volta para a
   // caixa sem digitar nada. Quem termina o logout e a rota abaixo, que derruba

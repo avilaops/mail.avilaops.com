@@ -44,6 +44,8 @@ export function ListaPastas({
   const [nomeNovo, setNomeNovo] = useState("");
   const [renomeando, setRenomeando] = useState<string | null>(null);
   const [nomeEditado, setNomeEditado] = useState("");
+  const [saindo, setSaindo] = useState(false);
+  const [erroSaida, setErroSaida] = useState<string | null>(null);
 
   const sistema = pastas
     .filter((pasta) => pasta.kind !== "custom")
@@ -227,6 +229,7 @@ export function ListaPastas({
           </div>
         )}
 
+        {erroSaida && <p role="alert" className="mb-2 text-xs text-[var(--color-perigo)]">{erroSaida}</p>}
         <div className="flex items-center gap-3 text-xs text-[var(--color-texto-fraco)]">
           <a href="/conta" className="underline underline-offset-2 transition hover:text-[var(--color-tinta)]">
             Conta
@@ -237,10 +240,17 @@ export function ListaPastas({
             </a>
           )}
           <button
-            onClick={() => void sair()}
+            disabled={saindo}
+            onClick={() => {
+              setSaindo(true); setErroSaida(null);
+              void sair().catch((falha) => {
+                setErroSaida(falha instanceof Error ? falha.message : "Não foi possível encerrar a sessão.");
+                setSaindo(false);
+              });
+            }}
             className="underline underline-offset-2 transition hover:text-[var(--color-tinta)]"
           >
-            Sair
+            {saindo ? "Saindo…" : "Sair"}
           </button>
           {/* O tema segue o horário; este botão é a saída para quem quer o contrário agora. */}
           <BotaoTema className="botao-tema ml-auto" />

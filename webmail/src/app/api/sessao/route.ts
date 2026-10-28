@@ -102,7 +102,10 @@ export async function DELETE(request: NextRequest) {
   // Revoga no servidor antes de limpar aqui: apagar so o cookie deixaria o
   // refresh valido por 30 dias na mao de quem tivesse copiado.
   if (refresh) {
-    await chamarApi("/auth/logout", { method: "POST", body: { refreshToken: refresh } });
+    const revogacao = await chamarApi("/auth/logout", { method: "POST", body: { refreshToken: refresh } });
+    if (!revogacao.ok) {
+      return NextResponse.json({ erro: "Não foi possível encerrar a sessão no servidor. Tente novamente." }, { status: revogacao.status });
+    }
   }
 
   await limparSessao();
