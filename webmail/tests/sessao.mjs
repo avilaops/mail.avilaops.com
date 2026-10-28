@@ -200,6 +200,10 @@ try {
   assert.equal(rt?.secure, true);
   assert.equal(rt?.path, "/");
   assert.ok(rt.expires - Date.now() / 1000 < 3601, "cookie respeita o TTL da API");
+  const saidaDireta = await contexto.request.get(`${base}/api/sessao/sair`, { maxRedirects: 0 });
+  assert.equal(saidaDireta.status(), 307, "GET de conclusao nao inicia logout de uma familia ainda ativa");
+  assert.equal(saidaDireta.headers().location, `${base}/caixa`);
+  assert.ok((await contexto.cookies()).some((cookie) => cookie.name === "avila_mail_rt_v2"), "acesso direto preserva prova para revogar via DELETE protegido");
   logoutIndisponivel = true;
   const tentativaLogout = await pagina.evaluate(async () => {
     const csrf = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("avila_mail_csrf="))?.split("=")[1];
@@ -212,6 +216,15 @@ try {
     try { await window.MailCliente.sair(); return false; } catch { return location.href === antes; }
   }), true, "cliente nao segue ao logout global quando Mail nao foi revogado");
   logoutIndisponivel = false;
+  const saidaConfirmada = await pagina.evaluate(async () => {
+    const csrf = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith("avila_mail_csrf="))?.split("=")[1];
+    return (await fetch("/api/sessao", { method: "DELETE", headers: { "x-csrf-token": decodeURIComponent(csrf ?? "") } })).status;
+  });
+  assert.equal(saidaConfirmada, 200, "repetir logout apos recuperacao confirma revogacao");
+  assert.equal((await contexto.cookies()).some((cookie) => cookie.name === "avila_mail_rt_v2"), false, "cookie e limpo somente apos confirmar revogacao");
+  const conclusaoLogout = await contexto.request.get(`${base}/api/sessao/sair`, { maxRedirects: 0 });
+  assert.equal(conclusaoLogout.status(), 200);
+  assert.ok((await conclusaoLogout.text()).includes("/api/auth/logout"), "SSO global fica para depois do DELETE confirmado");
   await contexto.clearCookies();
   const legado = tokens();
   await contexto.addCookies([{ name: "avila_mail_rt", value: legado.refreshToken, domain: "127.0.0.1", path: "/api/sessao", httpOnly: true, sameSite: "Strict" }]);
