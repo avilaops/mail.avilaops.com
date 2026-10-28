@@ -26,7 +26,7 @@ export function atualizarTituloDaAba(naoLidas: number): void {
 export type EstadoPermissao = "indisponivel" | "concedida" | "negada" | "nao-pedida";
 
 export function estadoDaPermissao(): EstadoPermissao {
-  if (typeof window === "undefined" || !("Notification" in window)) return "indisponivel";
+  if (typeof window === "undefined" || !("Notification" in window) || !("serviceWorker" in navigator)) return "indisponivel";
   if (Notification.permission === "granted") return "concedida";
   if (Notification.permission === "denied") return "negada";
   return "nao-pedida";
@@ -54,40 +54,44 @@ export interface MensagemParaAviso {
  * Varias mensagens de uma vez viram UM aviso agrupado — dez baloes em
  * sequencia sao o caminho mais rapido para a pessoa desligar a permissao.
  */
-export function avisarSistema(mensagens: MensagemParaAviso[], aoClicar: (id: string) => void, permitido = false): void {
+export async function avisarSistema(mensagens: MensagemParaAviso[], permitido: boolean, mailboxId: string): Promise<void> {
   // Decisao atual do servidor: preferencia da caixa e autorizacao do aparelho.
   if (!permitido) return;
-  if (mensagens.length === 0) return;
+  if (mensagens.length === 0 || !mailboxId) return;
   if (estadoDaPermissao() !== "concedida") return;
   if (typeof document !== "undefined" && document.visibilityState === "visible") return;
 
-  const primeira = mensagens[0]!;
-  const remetente = primeira.fromName?.trim() || primeira.fromAddress;
-
-  const titulo = mensagens.length === 1 ? remetente : `${mensagens.length} mensagens novas`;
-  const corpo =
-    mensagens.length === 1
-      ? primeira.subject?.trim() || "(sem assunto)"
-      : `${remetente} e mais ${mensagens.length - 1}`;
-
   try {
-    const aviso = new Notification(titulo, {
-      body: corpo,
-      icon: "/apple-touch-icon.png",
-      badge: "/apple-touch-icon.png",
-      // Uma notificacao por caixa: a nova substitui a anterior em vez de
-      // empilhar avisos que dizem a mesma coisa.
-      tag: "avila-mail-nova-mensagem",
-      renotify: mensagens.length > 1,
-    } as NotificationOptions);
-
-    aviso.onclick = () => {
-      window.focus();
-      if (mensagens.length === 1) aoClicar(primeira.id);
-      aviso.close();
-    };
+    await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    const registro = await navigator.serviceWorker.ready;
+    if (!registro.active) return;
+    const canal = new MessageChannel();
+    await new Promise<void>((resolve) => {
+      const terminar = () => { clearTimeout(limite); canal.port1.close(); resolve(); };
+      const limite = setTimeout(terminar, 5000);
+      canal.port1.onmessage = terminar;
+      registro.active!.postMessage({ type: "mail:avisar", avisos: mensagens.map((mensagem) => ({
+        mailboxId, eventId: mensagem.id, messageId: mensagem.id,
+        titulo: mensagem.fromName?.trim() || mensagem.fromAddress,
+        corpo: mensagem.subject?.trim() || "(sem assunto)",
+      })) }, [canal.port2]);
+    });
   } catch {
-    // Navegador que recusa criar a notificacao (modo restrito, por exemplo)
-    // nao pode derrubar o fluxo de mensagens.
+    // O contador e a lista continuam funcionando se o navegador recusar o aviso.
   }
+}
+
+let caixaAtualAvisos = "";
+let escutandoWorker = false;
+
+/** O worker consulta a caixa visivel antes de mostrar push, inclusive entre abas. */
+export function definirCaixaAvisos(mailboxId: string): void {
+  caixaAtualAvisos = mailboxId;
+  if (escutandoWorker || !("serviceWorker" in navigator)) return;
+  escutandoWorker = true;
+  navigator.serviceWorker.addEventListener("message", (evento) => {
+    if (evento.data?.type === "mail:consultar" && evento.ports[0]) {
+      evento.ports[0].postMessage({ mailboxId: caixaAtualAvisos, visivel: document.visibilityState === "visible" });
+    }
+  });
 }

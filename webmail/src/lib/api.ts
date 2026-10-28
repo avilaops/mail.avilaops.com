@@ -137,12 +137,12 @@ export async function chamarComSessao<T>(
  */
 export async function chamarBrutoComSessao(
   caminho: string,
-  opcoes: { semTempoLimite?: boolean; origem?: OrigemCliente; signal?: AbortSignal } = {},
+  opcoes: { semTempoLimite?: boolean; origem?: OrigemCliente; signal?: AbortSignal; lastEventId?: string } = {},
 ): Promise<Response> {
   const indisponivel = () => Response.json({ erro: "Servidor de e-mail indisponivel. Tente novamente." }, { status: 502 });
   const buscar = async (token: string) =>
     fetch(`${BASE}${caminho}`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${token}`, ...(opcoes.lastEventId ? { "Last-Event-ID": opcoes.lastEventId } : {}) },
       cache: "no-store",
       // Fluxo de eventos fica aberto por minutos de proposito; um tempo limite
       // aqui o mataria no meio e o cliente veria a conexao cair sozinha.

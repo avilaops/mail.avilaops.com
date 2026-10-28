@@ -6,8 +6,21 @@ import { htmlParaTexto, sanitizeMessageHtml } from "../lib/sanitize.js";
 import { getSystemFolder, resolveFolder, type SystemFolderKind, ensureSystemFolders } from "./folders.js";
 import { moverParaPasta } from "./uid.js";
 import { extrairIcalDaMensagem, resumirConvite } from "./calendar-invites.js";
+import type { Prisma } from "@prisma/client";
 
 const log = createLogger("messages");
+
+/** Um unico contrato para listagem HTTP e eventos de chegada. */
+export const camposResumoMensagem = {
+  id: true, folderId: true, threadKey: true, fromAddress: true, fromName: true, toAddresses: true,
+  subject: true, snippet: true, seen: true, flagged: true, answered: true, hasAttachments: true,
+  sizeBytes: true, spamScore: true, quarantineReason: true, authResult: true, receivedAt: true,
+} as const satisfies Prisma.MessageSelect;
+
+export function resumoMensagem(mensagem: Prisma.MessageGetPayload<{ select: typeof camposResumoMensagem }>) {
+  const { authResult, ...resumo } = mensagem;
+  return { ...resumo, senderVerified: isVerified(authResult) };
+}
 
 /**
  * Acesso as mensagens da caixa — o que o webmail consome.
@@ -232,25 +245,7 @@ export async function listMessages(input: ListMessagesInput) {
     where,
     orderBy: [{ receivedAt: "desc" }, { id: "desc" }],
     take: limit + 1,
-    select: {
-      id: true,
-      folderId: true,
-      threadKey: true,
-      fromAddress: true,
-      fromName: true,
-      toAddresses: true,
-      subject: true,
-      snippet: true,
-      seen: true,
-      flagged: true,
-      answered: true,
-      hasAttachments: true,
-      sizeBytes: true,
-      spamScore: true,
-      quarantineReason: true,
-      authResult: true,
-      receivedAt: true,
-    },
+    select: camposResumoMensagem,
   });
 
   const temMais = linhas.length > limit;
@@ -258,12 +253,7 @@ export async function listMessages(input: ListMessagesInput) {
   const ultimo = pagina[pagina.length - 1];
 
   return {
-    messages: pagina.map((mensagem) => ({
-      ...mensagem,
-      /** Selo de remetente verificado: DKIM valido e DMARC passando. */
-      senderVerified: isVerified(mensagem.authResult),
-      authResult: undefined,
-    })),
+    messages: pagina.map(resumoMensagem),
     nextCursor: temMais && ultimo ? encodeCursor({ receivedAt: ultimo.receivedAt, id: ultimo.id }) : null,
   };
 }

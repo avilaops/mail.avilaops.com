@@ -4,6 +4,7 @@ import { prisma } from "../lib/db.js";
 import { createLogger } from "../lib/logger.js";
 import { AuthError } from "./authError.js";
 import type { Prisma } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 
 const log = createLogger("push");
 
@@ -221,7 +222,7 @@ export async function enviarAviso(mailboxId: string, aviso: AvisoPush): Promise<
 export async function testarAviso(mailboxId: string, sessionId: string): Promise<{ tentativas: number; enviados: number }> {
   if (!pushDisponivel()) throw new AuthError("Aviso em segundo plano indisponivel no servidor.", 503);
   const familia = await sessaoDoAparelho(prisma, mailboxId, sessionId);
-  return enviarParaAparelhos(mailboxId, { titulo: "Teste de aviso Ávila Mail", corpo: "O aviso deste aparelho está funcionando.", url: "/conta", notificationTag: "mail:teste" }, familia);
+  return enviarParaAparelhos(mailboxId, { titulo: "Teste de aviso Ávila Mail", corpo: "O aviso deste aparelho está funcionando.", url: "/conta", notificationTag: `mail:teste:${randomUUID()}` }, familia);
 }
 
 async function enviarParaAparelhos(mailboxId: string, aviso: AvisoPush, somenteFamilia?: string): Promise<{ tentativas: number; enviados: number }> {
@@ -233,7 +234,7 @@ async function enviarParaAparelhos(mailboxId: string, aviso: AvisoPush, somenteF
   });
   if (inscricoes.length === 0) return { tentativas: 0, enviados: 0 };
 
-  const conteudo = JSON.stringify(aviso);
+  const conteudo = JSON.stringify({ ...aviso, mailboxId, eventId: aviso.messageId ?? aviso.notificationTag ?? randomUUID() });
 
   const resultados = await Promise.all(
     inscricoes.map(async (inscricao) => {

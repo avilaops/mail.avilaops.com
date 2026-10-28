@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/cliente";
-import { atualizarTituloDaAba, avisarSistema } from "@/lib/notificacoes";
+import { atualizarTituloDaAba, avisarSistema, definirCaixaAvisos } from "@/lib/notificacoes";
 import { ListaPastas } from "@/components/ListaPastas";
 import { ListaMensagens, type Filtro } from "@/components/ListaMensagens";
 import { LeitorMensagem, type ResumoConversa } from "@/components/LeitorMensagem";
@@ -92,6 +92,10 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
   const [filtro, setFiltro] = useState<Filtro>("todas");
   const [erro, setErro] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
+  const [conexaoAvisos, setConexaoAvisos] = useState<"conectando" | "online" | "reconectando">("conectando");
+  const [tentativaAvisos, setTentativaAvisos] = useState(0);
+  const cursorAvisos = useRef("");
+  const caixaAvisos = useRef("");
   /** Envio dentro da janela de arrependimento; nulo quando o prazo vence. */
   const [desfazivel, setDesfazivel] = useState<{
     queuedId: string;
@@ -114,10 +118,10 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
   const buscaTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const emRascunhos = pastaAtual === "drafts";
 
-  function avisar(texto: string) {
+  const avisar = useCallback((texto: string) => {
     setAviso(texto);
     setTimeout(() => setAviso(null), 4000);
-  }
+  }, []);
 
   const carregarPastas = useCallback(async () => {
     try {
@@ -563,54 +567,60 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
 
   // --- Aviso de mensagem nova ---
 
+  const contextoAvisos = useRef({ pastaAtual, busca, filtro });
+  useEffect(() => { contextoAvisos.current = { pastaAtual, busca, filtro }; }, [pastaAtual, busca, filtro]);
+
   useEffect(() => {
     // EventSource não aceita cabeçalho customizado, mas manda o cookie da
     // origem — que é justamente onde o token vive. O proxy repassa o fluxo.
-    const fonte = new EventSource("/api/mail/me/events", { withCredentials: true });
+    setConexaoAvisos("conectando");
+    const parametros = cursorAvisos.current ? `?cursor=${encodeURIComponent(cursorAvisos.current)}` : "";
+    const fonte = new EventSource(`/api/mail/me/events${parametros}`, { withCredentials: true });
+    const reconciliar = () => {
+      const atual = contextoAvisos.current;
+      void carregarPastas();
+      void carregarLista(atual.pastaAtual, atual.busca, atual.filtro);
+    };
+    const guardarCursor = (evento: Event) => {
+      const id = (evento as MessageEvent).lastEventId;
+      if (id) cursorAvisos.current = id;
+    };
+    fonte.addEventListener("checkpoint", guardarCursor);
+    fonte.addEventListener("ready", (evento) => {
+      guardarCursor(evento);
+      try {
+        const dados = JSON.parse((evento as MessageEvent<string>).data) as { mailboxId?: string };
+        if (dados.mailboxId) { caixaAvisos.current = dados.mailboxId; definirCaixaAvisos(dados.mailboxId); }
+      } catch { /* A reconciliacao nao depende de um resumo parcial. */ }
+      setConexaoAvisos("online");
+      reconciliar();
+    });
 
     fonte.addEventListener("message", (evento) => {
-      const dados = JSON.parse((evento as MessageEvent<string>).data) as { messages: ResumoMensagem[]; notify?: boolean };
-      void carregarPastas();
-
-      // Notificacao do sistema vale para qualquer pasta aberta: o que importa
-      // e que chegou, nao o que a pessoa esta olhando. A propria funcao se
-      // cala quando a aba esta visivel.
-      avisarSistema(
-        dados.messages.map((m) => ({
-          id: m.id,
-          fromName: m.fromName,
-          fromAddress: m.fromAddress,
-          subject: m.subject,
-        })),
-        (id) => void abrir(id, false, true),
-        dados.notify === true,
-      );
-      // So mexe na lista se o cliente estiver olhando a Entrada sem recorte.
-      // Injetar mensagem nova numa busca em andamento bagunca o resultado, e
-      // numa lista de favoritas colocaria no topo o que nao e favorito.
-      if (pastaAtual === "inbox" && !busca && filtro === "todas") {
-        setMensagens((atual) => {
-          const conhecidas = new Set(atual.map((item) => item.id));
-          const novas = dados.messages.filter((item) => !conhecidas.has(item.id));
-          return novas.length > 0 ? [...novas, ...atual] : atual;
-        });
-
-        if (dados.messages.length > 0) {
-          avisar(
-            dados.messages.length === 1
-              ? "Chegou uma mensagem nova."
-              : `Chegaram ${dados.messages.length} mensagens novas.`,
-          );
-        }
-      }
+      guardarCursor(evento);
+      reconciliar();
+      try {
+        const dados = JSON.parse((evento as MessageEvent<string>).data) as { messages?: ResumoMensagem[]; notifyIds?: string[] };
+        if (!Array.isArray(dados.messages) || !Array.isArray(dados.notifyIds)) return;
+        const autorizadas = new Set(dados.notifyIds);
+        const mensagens = dados.messages.filter((mensagem) => autorizadas.has(mensagem.id));
+        void avisarSistema(mensagens, mensagens.length > 0, caixaAvisos.current);
+        if (mensagens.length) avisar(mensagens.length === 1 ? "Chegou uma mensagem nova." : `Chegaram ${mensagens.length} mensagens novas.`);
+      } catch { /* A lista e as contagens ja foram reconciliadas pela API. */ }
     });
 
     // O servidor encerra o fluxo a cada 5 min de propósito; o EventSource
     // reconecta sozinho, o que também cobre queda de rede.
-    fonte.onerror = () => undefined;
-
-    return () => fonte.close();
-  }, [pastaAtual, busca, filtro, carregarPastas, abrir]);
+    let conferiuSessao = false;
+    fonte.onopen = () => { conferiuSessao = false; };
+    fonte.onerror = () => {
+      setConexaoAvisos("reconectando");
+      if (!conferiuSessao) { conferiuSessao = true; void api("/me").catch(() => undefined); }
+    };
+    const aoVoltar = () => { if (document.visibilityState === "visible") reconciliar(); };
+    document.addEventListener("visibilitychange", aoVoltar);
+    return () => { fonte.close(); definirCaixaAvisos(""); document.removeEventListener("visibilitychange", aoVoltar); };
+  }, [carregarPastas, carregarLista, tentativaAvisos, avisar]);
 
   // --- Atalhos de teclado ---
 
@@ -764,6 +774,10 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
       </div>
 
       <main className={`${vista === "leitura" ? "flex" : "hidden"} min-w-0 flex-1 flex-col md:flex`}>
+        {conexaoAvisos !== "online" && <div role="status" className="border-b px-6 py-2 text-sm text-[var(--color-texto-fraco)]">
+          {conexaoAvisos === "conectando" ? "Conectando os avisos…" : "Avisos desconectados. Tentando reconectar…"}
+          <button type="button" className="ml-3 underline" onClick={() => setTentativaAvisos((atual) => atual + 1)}>Reconectar agora</button>
+        </div>}
         {erro && (
           <div role="alert" className="border-b border-amber-200 bg-amber-50 px-6 py-2 text-sm text-[var(--color-atencao)]">
             {erro}

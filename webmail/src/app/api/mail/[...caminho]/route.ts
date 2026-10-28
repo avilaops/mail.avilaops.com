@@ -80,7 +80,9 @@ async function encaminhar(request: NextRequest, caminho: string[]): Promise<Next
   // resposta inteira para reserializar em JSON, como as demais rotas, travaria
   // a conexao para sempre — o stream nunca "termina".
   if (request.method === "GET" && rota === "me/events") {
-    const fluxo = await chamarBrutoComSessao(destino, { semTempoLimite: true, origem: origemDaRequisicao(request), signal: request.signal });
+    const lastEventId = request.headers.get("last-event-id") ?? undefined;
+    const fluxo = await chamarBrutoComSessao(destino, { semTempoLimite: true, origem: origemDaRequisicao(request), signal: request.signal,
+      lastEventId: lastEventId && lastEventId.length <= 180 ? lastEventId : undefined });
 
     if (!fluxo.ok || !fluxo.body) {
       if (fluxo.status === 401) return sessaoRecusada(request);

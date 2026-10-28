@@ -3006,7 +3006,7 @@ await (async () => {
   };
   try {
     await prisma.mailboxSettings.upsert({ where: { mailboxId: mailboxPush }, create: { mailboxId: mailboxPush, notifyEnabled: false }, update: { notifyEnabled: false } });
-    const mensagemSilenciosa = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox");
+    const mensagemSilenciosa = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox", { notificationKind: "mensagem" });
     await prisma.message.update({ where: { id: mensagemSilenciosa! }, data: { receivedAt: new Date() } });
     const silencioso = await lerAviso();
     check("SSE entrega dados mas cala balao quando preferencia desliga", silencioso.notify === false);
@@ -3014,11 +3014,11 @@ await (async () => {
     check("SSE usa resumo completo igual ao da listagem", typeof resumoSse?.folderId === "string" && Array.isArray(resumoSse.toAddresses) &&
       typeof resumoSse.seen === "boolean" && typeof resumoSse.sizeBytes === "number" && typeof resumoSse.senderVerified === "boolean");
     await prisma.mailboxSettings.update({ where: { mailboxId: mailboxPush }, data: { notifyEnabled: true } });
-    const mensagemAudivel = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox");
+    const mensagemAudivel = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox", { notificationKind: "mensagem" });
     await prisma.message.update({ where: { id: mensagemAudivel! }, data: { receivedAt: new Date() } });
     check("SSE permite balao somente com aparelho e preferencia ligados", (await lerAviso()).notify === true);
     await habilitar(a.accessToken, false);
-    const mensagemAparelhoMudo = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox");
+    const mensagemAparelhoMudo = await storeCopyInMailbox(mailboxPush, MENSAGEM_BRUTA, "inbox", { notificationKind: "mensagem" });
     await prisma.message.update({ where: { id: mensagemAparelhoMudo! }, data: { receivedAt: new Date() } });
     const aparelhoMudo = await lerAviso();
     check("SSE aberto respeita desligamento posterior do aparelho", aparelhoMudo.notify === false);

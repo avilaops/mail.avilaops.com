@@ -127,6 +127,8 @@ model Mailbox {
   /// da colecao; o valor corrente e o ctag/sync-token que o cliente guarda.
   davContactsSeq    BigInt @default(0) @map("dav_contacts_seq")
   davCalendarSeq    BigInt @default(0) @map("dav_calendar_seq")
+  /// Cursor de chegada serializado pelo lock transacional desta caixa.
+  messageEventSeq BigInt @default(0) @map("message_event_seq")
   /// Tokens anteriores a estes pisos perderam lapides e precisam refazer o sync inicial.
   davContactsMinSeq BigInt @default(0) @map("dav_contacts_min_seq")
   davCalendarMinSeq BigInt @default(0) @map("dav_calendar_min_seq")
@@ -526,6 +528,9 @@ model Message {
   uid Int @default(0)
 
   receivedAt DateTime  @default(now()) @map("received_at")
+  arrivalSeq BigInt @default(0) @map("arrival_seq")
+  /// Origem interna; nunca inferida de headers de remetentes externos.
+  notificationKind String @default("none") @map("notification_kind")
   /// Inicio da permanencia na lixeira, independente da data de recebimento.
   trashedAt  DateTime? @map("trashed_at")
 
@@ -539,6 +544,7 @@ model Message {
   attachments Attachment[]
 
   @@unique([folderId, uid])
+  @@index([mailboxId, arrivalSeq])
   @@index([mailboxId, folderId, receivedAt(sort: Desc)])
   @@index([mailboxId, folderId, trashedAt])
   @@index([mailboxId, seen])

@@ -44,6 +44,7 @@ import { autenticarChave, criarChave, ehAdministrador, escopoDoToken, listarChav
 import { handleAdminRoute } from "./admin-routes.js";
 import { avisoPermitido, avisosHabilitadosAqui, habilitarAvisosAqui, chavePublica, listarInscricoes, pushDisponivel, registrarInscricao, removerInscricao, testarAviso } from "../services/push.js";
 import { receberLogoutSso, receberSinalSso } from "../services/ssoRevocation.js";
+import { cursorMensagem, eventosMensagem, lerCursorMensagem } from "../services/messageEvents.js";
 import { getCalendarSettings, getSettings, updateCalendarSettings, updateProfile, updateSettings } from "../services/settings.js";
 import { listSendAs, searchContacts } from "../services/contacts.js";
 import { deleteUpload, listUploads, storeUpload } from "../services/uploads.js";
@@ -283,7 +284,11 @@ const SSE_MAX_MS = 5 * 60_000;
  * confiavel do que descobrir que o canal morreu calado.
  */
 async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId: string): Promise<void> {
-  let ultimoCalendarSeq = (await prisma.mailbox.findUnique({ where: { id: mailboxId }, select: { davCalendarSeq: true } }))?.davCalendarSeq ?? 0n;
+  const inicial = await prisma.mailbox.findUniqueOrThrow({ where: { id: mailboxId }, select: { davCalendarSeq: true, messageEventSeq: true } });
+  let ultimoCalendarSeq = inicial.davCalendarSeq;
+  const recebido = req.headers["last-event-id"];
+  const cursorPedido = typeof recebido === "string" ? recebido : new URL(req.url ?? "/", "http://localhost").searchParams.get("cursor") ?? undefined;
+  let ultimaMensagemSeq = lerCursorMensagem(cursorPedido, mailboxId, inicial.messageEventSeq);
   let ultimoLembrete = new Date(Date.now() - 2 * 60_000);
   let ultimoLembreteId = "";
   res.writeHead(200, {
@@ -295,11 +300,11 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId
   });
 
   const enviar = (evento: string, dados: unknown) => {
-    res.write(`event: ${evento}\ndata: ${JSON.stringify(dados)}\n\n`);
+    res.write(`id: ${cursorMensagem(mailboxId, ultimaMensagemSeq)}\nevent: ${evento}\ndata: ${JSON.stringify(dados)}\n\n`);
   };
 
-  let ultimoVisto = new Date();
   let ativo = true;
+  let consultando = false;
 
   const encerrar = () => {
     if (!ativo) return;
@@ -315,17 +320,13 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId
 
   const timer = setInterval(() => {
     void (async () => {
-      if (!ativo) return;
+      if (!ativo || consultando) return;
+      consultando = true;
       try {
         // Logout/suspensao/troca de dono tambem encerram conexoes ja abertas.
         const sessaoAtual = await autenticar(req, "/v1/me/events");
-        const [novas, caixa, lembretes] = await Promise.all([
-          prisma.message.findMany({
-            where: { mailboxId, receivedAt: { gt: ultimoVisto }, folder: { kind: "inbox" } },
-            orderBy: { receivedAt: "asc" },
-            select: { id: true, fromAddress: true, fromName: true, subject: true, receivedAt: true },
-            take: 20,
-          }),
+        const [chegadas, caixa, lembretes] = await Promise.all([
+          eventosMensagem(mailboxId, ultimaMensagemSeq),
           prisma.mailbox.findUnique({ where: { id: mailboxId }, select: { davCalendarSeq: true } }),
           prisma.calendarReminderDelivery.findMany({
             where: { mailboxId, status: "sent", OR: [{ deliveredAt: { gt: ultimoLembrete } }, { deliveredAt: ultimoLembrete, id: { gt: ultimoLembreteId } }] },
@@ -334,13 +335,23 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId
             take: 20,
           }),
         ]);
+        if (!ativo) return;
 
         let enviou = false;
-        if (novas.length > 0) {
-          ultimoVisto = novas[novas.length - 1]?.receivedAt ?? ultimoVisto;
-          const notify = await avisosHabilitadosAqui(mailboxId, sessaoAtual.sessionId) &&
-            await avisoPermitido(mailboxId, { titulo: "Mensagem nova", corpo: "", tipo: "mensagem", naEntrada: true });
-          enviar("message", { messages: novas, unread: (await unreadCounts(mailboxId)).total, notify });
+        const cursorMudou = ultimaMensagemSeq !== chegadas.seq;
+        ultimaMensagemSeq = chegadas.seq;
+        if (chegadas.messages.length > 0) {
+          const [habilitado, entrada, outrasPastas] = await Promise.all([
+            avisosHabilitadosAqui(mailboxId, sessaoAtual.sessionId),
+            avisoPermitido(mailboxId, { titulo: "Mensagem nova", corpo: "", naEntrada: true }),
+            avisoPermitido(mailboxId, { titulo: "Mensagem nova", corpo: "", naEntrada: false }),
+          ]);
+          const notifyIds = habilitado ? chegadas.avisos.filter((aviso) => aviso.tipo === "seguranca" ||
+            (aviso.tipo === "mensagem" && !["spam", "trash", "sent", "drafts"].includes(aviso.pasta) && (aviso.pasta === "inbox" ? entrada : outrasPastas))).map((aviso) => aviso.id) : [];
+          enviar("message", { messages: chegadas.messages, unread: (await unreadCounts(mailboxId)).total, notify: notifyIds.length > 0, notifyIds });
+          enviou = true;
+        } else if (cursorMudou) {
+          enviar("checkpoint", {});
           enviou = true;
         }
         if (caixa && caixa.davCalendarSeq > ultimoCalendarSeq) {
@@ -361,6 +372,8 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId
         }
       } catch {
         encerrar();
+      } finally {
+        consultando = false;
       }
     })();
   }, SSE_POLL_MS);

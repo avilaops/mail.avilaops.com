@@ -62,9 +62,9 @@ const backend = createServer(async (req, res) => {
     mutacoes++;
     return responder(200, { ok: true });
   }
-  if (req.url === "/v1/me/events") {
+  if (req.url?.startsWith("/v1/me/events")) {
     res.writeHead(200, { "content-type": "text/event-stream" });
-    return res.end("event: ready\ndata: {}\n\n");
+    return res.end(`id: teste:1\nevent: ready\ndata: ${JSON.stringify({ mailboxId: "teste", cursorRecebido: req.headers["last-event-id"] ?? null })}\n\n`);
   }
   if (req.url?.endsWith("/raw")) {
     res.writeHead(200, { "content-type": "message/rfc822", "content-disposition": "attachment" });
@@ -131,7 +131,7 @@ try {
     if (tentativa > 60 || next.exitCode !== null) throw new Error("Next nao iniciou no CI");
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ headless: true, args: ["--ignore-certificate-errors"] });
   const contexto = await browser.newContext({ ignoreHTTPSErrors: true });
   // Executar o cliente real permite verificar a repeticao de mutacoes, sem
   // criar uma pagina de teste dentro da aplicacao ou copiar sua logica.
@@ -144,17 +144,22 @@ try {
   const pagina = await contexto.newPage();
   const base = "https://127.0.0.1:3441";
   await pagina.goto(`${base}/entrar?local=1`);
-  const contagemAvisos = await pagina.evaluate(() => {
+  const contagemAvisos = await pagina.evaluate(async () => {
     const Original = window.Notification;
+    const serviceWorkerOriginal = Object.getOwnPropertyDescriptor(navigator, "serviceWorker");
     let emitidos = 0;
-    window.Notification = class { static permission = "granted"; constructor() { emitidos++; } };
+    window.Notification = class { static permission = "granted"; };
+    const registro = { active: { postMessage: (_dados, portas) => { emitidos++; portas[0].postMessage({ ok: true }); } } };
+    Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: { register: async () => registro, ready: Promise.resolve(registro) } });
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
     const mensagens = [{ id: "mensagem-ci", fromAddress: "remetente@exemplo.test", subject: "Teste" }];
-    window.MailAvisos.avisarSistema(mensagens, () => undefined, false);
+    await window.MailAvisos.avisarSistema(mensagens, false, "caixa-ci");
     const desligado = emitidos;
-    window.MailAvisos.avisarSistema(mensagens, () => undefined, true);
+    await window.MailAvisos.avisarSistema(mensagens, true, "caixa-ci");
     const ligado = emitidos;
     window.Notification = Original;
+    if (serviceWorkerOriginal) Object.defineProperty(navigator, "serviceWorker", serviceWorkerOriginal);
+    else delete navigator.serviceWorker;
     delete document.visibilityState;
     return { desligado, ligado };
   });
@@ -186,6 +191,8 @@ try {
     assert.equal((await pedir(caminho)).status, 200, "mesmo request recupera sem autenticar novamente");
   }
   const csrf = (await contexto.cookies()).find((cookie) => cookie.name === "avila_mail_csrf");
+  const cursorRepassado = await pagina.evaluate(async () => (await fetch("/api/mail/me/events", { headers: { "Last-Event-ID": "teste:12345" } })).text());
+  assert.ok(cursorRepassado.includes('"cursorRecebido":"teste:12345"'), "BFF repassa Last-Event-ID ao renovar ou reconectar SSE");
   assert.equal(csrf?.httpOnly, false);
   const rt = (await contexto.cookies()).find((cookie) => cookie.name === "avila_mail_rt_v2");
   assert.equal(rt?.httpOnly, true);
@@ -314,6 +321,48 @@ try {
   await pagina.goto(callbackPermitido.headers().location);
   await pagina.getByRole("heading", { name: "Mensagem exata do aviso CI", exact: true }).waitFor();
   modoSso = "revogado";
+  const contextoDedup = await browser.newContext({ ignoreHTTPSErrors: true });
+  try {
+    const aba1 = await contextoDedup.newPage();
+    await aba1.goto(`${base}/entrar?local=1`);
+    const workerCriado = contextoDedup.waitForEvent("serviceworker");
+    await aba1.evaluate(async () => { await navigator.serviceWorker.register("/sw.js", { scope: "/" }); await navigator.serviceWorker.ready; });
+    const worker = await workerCriado;
+    await worker.evaluate(() => {
+      self.exibidosCi = 0;
+      self.falharAvisoCi = false;
+      self.registration.showNotification = async () => { if (self.falharAvisoCi) throw new Error("Recusa controlada CI"); self.exibidosCi++; };
+    });
+    const aba2 = await contextoDedup.newPage();
+    await aba2.goto(`${base}/entrar?local=1`);
+    const mandarAviso = (aba, aviso) => aba.evaluate(async (dados) => {
+      const registro = await navigator.serviceWorker.ready;
+      return new Promise((resolve, reject) => {
+        const canal = new MessageChannel();
+        const limite = setTimeout(() => { canal.port1.close(); reject(new Error("Worker nao confirmou aviso CI")); }, 5000);
+        canal.port1.onmessage = (evento) => { clearTimeout(limite); canal.port1.close(); resolve(evento.data.ok); };
+        registro.active.postMessage({ type: "mail:avisar", avisos: [dados] }, [canal.port2]);
+      });
+    }, aviso);
+    const avisoUnico = { mailboxId: "caixa-dedup-ci", eventId: "evento-unico-ci", messageId: "mensagem-unica-ci", titulo: "Aviso CI", corpo: "Teste" };
+    await Promise.all([mandarAviso(aba1, avisoUnico), mandarAviso(aba2, avisoUnico), worker.evaluate((aviso) => emitirAvisos([aviso]), avisoUnico)]);
+    assert.equal(await worker.evaluate(() => self.exibidosCi), 1, "duas abas e caminho push compartilham uma reserva IndexedDB real");
+    await worker.evaluate(async (aviso) => { await emitirAvisos([aviso, aviso]); }, { ...avisoUnico, eventId: "duplicado-no-lote" });
+    assert.equal(await worker.evaluate(() => self.exibidosCi), 2, "evento repetido no mesmo lote nao duplica aviso");
+    await worker.evaluate(() => { self.falharAvisoCi = true; });
+    assert.equal(await mandarAviso(aba1, { ...avisoUnico, eventId: "falha-recuperavel" }), false);
+    await worker.evaluate(() => { self.falharAvisoCi = false; });
+    assert.equal(await mandarAviso(aba2, { ...avisoUnico, eventId: "falha-recuperavel" }), true);
+    assert.equal(await worker.evaluate(() => self.exibidosCi), 3, "recusa do navegador libera reserva para uma tentativa posterior");
+    await aba1.evaluate(() => navigator.serviceWorker.addEventListener("message", (evento) => {
+      if (evento.data?.type === "mail:consultar") evento.ports[0]?.postMessage({ mailboxId: "caixa-dedup-ci", visivel: true });
+    }));
+    await aba1.bringToFront();
+    await mandarAviso(aba2, { ...avisoUnico, eventId: "caixa-ja-visivel" });
+    assert.equal(await worker.evaluate(() => self.exibidosCi), 3, "push nao avisa caixa que ja esta visivel em outra aba");
+    await mandarAviso(aba1, { ...avisoUnico, mailboxId: "outra-caixa-ci" });
+    assert.equal(await worker.evaluate(() => self.exibidosCi), 4, "deduplicacao e presenca sao isoladas por caixa");
+  } finally { await contextoDedup.close(); }
   let saiuDoAuth = 0;
   let inicioNovoLogin = 0;
   await pagina.route("https://auth.exemplo.test/**", async (rota) => {
