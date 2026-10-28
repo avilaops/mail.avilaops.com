@@ -105,6 +105,13 @@ try {
   assert.equal(new URL(pagina.url()).pathname, "/caixa", "cookie legado migra sem novo login");
   assert.equal((await contexto.cookies()).some((cookie) => cookie.name === "avila_mail_rt"), false, "cookie legado removido");
   assert.equal((await pedir("/api/mail/me")).status, 200);
+  await pagina.goto(`${base}/entrar?local=1`);
+  for (const caminho of ["/api/mail/me", "/api/mail/me/messages/teste/raw", "/api/mail/me/events"]) {
+    await contexto.clearCookies();
+    const sessaoAntiga = tokens();
+    await contexto.addCookies([{ name: "avila_mail_rt", value: sessaoAntiga.refreshToken, domain: "127.0.0.1", path: "/api/sessao", httpOnly: true, sameSite: "Strict" }]);
+    assert.equal((await pedir(caminho)).status, 200, "aba ja aberta recupera cookie legado pela API");
+  }
   console.log("PASSOU — sessao real no navegador: reabertura, renovacao, JSON/download/SSE, recuperacao e cookies");
 } finally {
   await browser?.close();

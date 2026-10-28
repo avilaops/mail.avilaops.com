@@ -281,6 +281,14 @@ const idAparelho = verifyAccessToken(aparelho.accessToken)!.sid;
 const novoAparelho = await refresh({ refreshToken: aparelho.refreshToken });
 await revogarSessaoTeste(caixa.id, idAparelho);
 await esperaErro("revogar aparelho pelo id antigo revoga a familia", () => refresh({ refreshToken: novoAparelho.refreshToken }), "invalida");
+const antesDoLogoutGlobal = await login({ address: "contato@brilhax.com.br", password: SENHA });
+await refresh({ refreshToken: antesDoLogoutGlobal.refreshToken });
+await logoutAll(caixa.id);
+const depoisDoLogoutGlobal = await login({ address: "contato@brilhax.com.br", password: SENHA });
+await prisma.mailSession.update({ where: { refreshHash: hashRefresh(antesDoLogoutGlobal.refreshToken) }, data: { revokedAt: new Date(Date.now() - 11_000) } });
+await esperaErro("ancestral do logout global continua recusado", () => refresh({ refreshToken: antesDoLogoutGlobal.refreshToken }), "invalida");
+const novoLoginPreservado = await refresh({ refreshToken: depoisDoLogoutGlobal.refreshToken }).catch(() => null);
+check("ancestral apos logout global nao derruba novo login", novoLoginPreservado !== null);
 
 console.log("\n[6] Forca bruta: bloqueia o atacante sem trancar o cliente");
 await createMailbox({ domain: "brilhax.com.br", username: "alvo", password: SENHA });
