@@ -37,7 +37,7 @@ export function identidadeSso(token: string): IdentidadeSso {
  */
 export async function conferirPoliticaSso(token: string): Promise<void> {
   const base = authBase();
-  const retorno = `${(process.env.WEBMAIL_URL ?? "https://mail.avilaops.com").replace(/\/$/, "")}/api/sessao/sso`;
+  const retorno = new URL("/api/sessao/sso", process.env.WEBMAIL_URL ?? "https://mail.avilaops.com").href;
   const destino = new URL("/login", base);
   destino.search = new URLSearchParams({ app: "mail", returnTo: retorno }).toString();
   let resposta: Response;

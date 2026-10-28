@@ -334,6 +334,7 @@ await (async () => {
     return jwtContrato.sign(payload, segredo, { issuer: "auth.avilaops.com" });
   };
   const token = emitir();
+  let caixaExtraSso: string | null = null;
   try {
     politica = "negado";
     await esperaErro("callback direto nao contorna permissao do Auth", () => loginSso({ ssoToken: token }), "acesso");
@@ -385,13 +386,54 @@ await (async () => {
     const legado = await prisma.mailSession.create({ data: {
       mailboxId: caixa.id, refreshHash: hashRefresh(refreshLegado), expiresAt: new Date(Date.now() + 86_400_000),
     } });
-    await esperaErro("sessao anterior sem origem exige reautenticacao unica", () => refresh({ refreshToken: refreshLegado }), "invalida");
     const { signAccessToken } = await import("../lib/jwt.js");
     const acessoLegado = signAccessToken({ sub: caixa.id, adr: caixa.address, sid: legado.id });
     check("access token legado nao contorna a migracao", (await fetch(`${baseReceptor}/v1/me/push`, {
       headers: { Authorization: `Bearer ${acessoLegado}` },
     })).status === 401);
+    await esperaErro("sessao anterior sem origem exige reautenticacao unica", () => refresh({ refreshToken: refreshLegado }), "invalida");
+    const segundaCaixa = await createMailbox({ domain: "brilhax.com.br", username: "contrato-sso", password: SENHA,
+      ownerEmail: "contato@brilhax.com.br", mustChangePassword: false });
+    caixaExtraSso = segundaCaixa.id;
+    const escolher = await loginSso({ ssoToken: novoCookie });
+    check("SSO preserva selecao de varias caixas", "choose" in escolher && escolher.choose.length === 2);
+    await esperaErro("SSO nao aceita caixa de outra conta", () => loginSso({ ssoToken: novoCookie, address: "outra@exemplo.test" }), "pertence");
+    const selecionada = await loginSso({ ssoToken: novoCookie, address: segundaCaixa.address });
+    if ("choose" in selecionada) throw new Error("Caixa escolhida nao foi aberta");
+    await prisma.mailbox.update({ where: { id: segundaCaixa.id }, data: { ownerEmail: "outro-dono@exemplo.test" } });
+    check("troca de dono revoga acesso SSO imediatamente", (await fetch(`${baseReceptor}/v1/me/push`, {
+      headers: { Authorization: `Bearer ${selecionada.accessToken}` },
+    })).status === 403);
+    await esperaErro("caixa transferida nao renova pelo dono antigo", () => refresh({ refreshToken: selecionada.refreshToken }), "pertence");
+    const outraIdentidade = await loginSso({ ssoToken: emitir({ sub: "outra-identidade-auth" }) });
+    if ("choose" in outraIdentidade) throw new Error("Outra identidade deveria ter apenas uma caixa");
+    const corrida = await Promise.allSettled([
+      loginSso({ ssoToken: emitir({ iat: agora + 2 }) }),
+      enviarSinal(sinal({ iat: agora + 2, exp: agora + 122 })),
+    ]);
+    check("logout concorrente e aceito", corrida[1]?.status === "fulfilled" && corrida[1].value.status === 200);
+    check("login concorrente nao ressuscita JWT revogado", (await prisma.mailSession.count({ where: {
+      ssoSubject: "identidade-auth-contrato", ssoIssuedAt: { lte: new Date((agora + 2) * 1000) }, revokedAt: null,
+    } })) === 0);
+    check("revogacao nao cruza identidades", (await refresh({ refreshToken: outraIdentidade.refreshToken })).accessToken.length > 0);
+    check("aviso antigo nao regride o corte persistido", (await enviarSinal(sinal())).status === 200 &&
+      (await prisma.mailSsoRevocation.findUniqueOrThrow({ where: { subject: "identidade-auth-contrato" } })).revokedBefore.getTime() === (agora + 2) * 1000);
+    const sessaoStream = await loginSso({ ssoToken: emitir({ sub: "identidade-stream-auth" }) });
+    if ("choose" in sessaoStream) throw new Error("Stream esperava uma caixa");
+    const abortoStream = new AbortController();
+    const limiteStream = setTimeout(() => abortoStream.abort(), 12_000);
+    const fluxo = await fetch(`${baseReceptor}/v1/me/events`, {
+      headers: { Authorization: `Bearer ${sessaoStream.accessToken}` }, signal: abortoStream.signal,
+    });
+    const leitor = fluxo.body!.getReader();
+    await leitor.read();
+    await enviarSinal(sinal({ sub: "identidade-stream-auth" }));
+    let streamEncerrado = false;
+    try { streamEncerrado = (await leitor.read()).done === true; } catch { /* timeout nao conta como revogacao */ }
+    finally { clearTimeout(limiteStream); abortoStream.abort(); leitor.releaseLock(); }
+    check("logout Auth encerra canal SSE ja aberto na proxima verificacao", streamEncerrado);
   } finally {
+    if (caixaExtraSso) await prisma.mailbox.delete({ where: { id: caixaExtraSso } });
     receptor.closeAllConnections();
     await new Promise<void>((resolve) => receptor.close(() => resolve()));
     emissor.closeAllConnections();
