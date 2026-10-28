@@ -14,6 +14,7 @@ export interface RespostaApi<T> {
   status: number;
   dados: T | null;
   erro: string | null;
+  codigo?: string;
 }
 
 async function interpretar<T>(resposta: Response): Promise<RespostaApi<T>> {
@@ -33,7 +34,10 @@ async function interpretar<T>(resposta: Response): Promise<RespostaApi<T>> {
       corpo && typeof corpo === "object" && "error" in corpo
         ? String((corpo as { error?: { message?: string } }).error?.message ?? "Erro na requisicao.")
         : "Erro na requisicao.";
-    return { ok: false, status: resposta.status, dados: null, erro: mensagem };
+    const codigo = corpo && typeof corpo === "object" && "error" in corpo
+      ? (corpo as { error?: { code?: unknown } }).error?.code : undefined;
+    return { ok: false, status: resposta.status, dados: null, erro: mensagem,
+      ...(typeof codigo === "string" ? { codigo } : {}) };
   }
 
   return { ok: true, status: resposta.status, dados: corpo as T, erro: null };

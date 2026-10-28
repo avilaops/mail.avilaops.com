@@ -42,6 +42,7 @@ export async function GET(request: NextRequest) {
   });
 
   if (!resposta.ok || !resposta.dados) {
+    if (resposta.codigo === "sso_reauth_required") return NextResponse.redirect(`${base}/api/sessao/sso/reautenticar`);
     if (resposta.status === 428) return NextResponse.redirect(urlLoginSso());
     const motivo = resposta.status === 404 ? "sem_caixa" : resposta.status === 403 ? "caixa_indisponivel" : "sso_invalido";
     const q = new URLSearchParams({ erro: motivo });

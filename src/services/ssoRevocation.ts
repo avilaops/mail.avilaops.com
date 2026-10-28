@@ -39,12 +39,12 @@ export async function conferirRevogacaoSso(tx: Prisma.TransactionClient, subject
     VALUES (${email}, ${new Date(0)}) ON CONFLICT (email) DO NOTHING`;
   await tx.$queryRaw`SELECT email FROM mail_sso_email_revocations WHERE email = ${email} FOR UPDATE`;
   const corteEmail = await tx.mailSsoEmailRevocation.findUniqueOrThrow({ where: { email } });
-  if (issuedAt <= corteEmail.revokedBefore) throw new AuthError("Sessao do SSO revogada. Entre novamente.");
+  if (issuedAt <= corteEmail.revokedBefore) throw new AuthError("Sessao do SSO revogada. Entre novamente.", 401, "sso_reauth_required");
   await tx.$executeRaw`INSERT INTO mail_sso_revocations (subject, revoked_before)
     VALUES (${subject}, ${new Date(0)}) ON CONFLICT (subject) DO NOTHING`;
   await tx.$queryRaw`SELECT subject FROM mail_sso_revocations WHERE subject = ${subject} FOR UPDATE`;
   const corte = await tx.mailSsoRevocation.findUniqueOrThrow({ where: { subject } });
-  if (issuedAt <= corte.revokedBefore) throw new AuthError("Sessao do SSO revogada. Entre novamente.");
+  if (issuedAt <= corte.revokedBefore) throw new AuthError("Sessao do SSO revogada. Entre novamente.", 401, "sso_reauth_required");
 }
 
 /** Eventos de seguranca do transmissor SSF atual: mesma chave, outro tipo JWT. */

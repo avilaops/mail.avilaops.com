@@ -505,7 +505,7 @@ function start(): void {
           error instanceof SignupError ||
           error instanceof HttpError
         ) {
-          return fail(res, error.statusCode, error.message);
+          return fail(res, error.statusCode, error.message, error instanceof AuthError ? error.code : undefined);
         }
         /**
          * Falha do Mercado Pago vira 502, nao 500.

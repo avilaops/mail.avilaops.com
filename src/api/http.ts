@@ -28,8 +28,8 @@ export function json(res: ServerResponse, status: number, payload: unknown): voi
   res.end(body);
 }
 
-export function fail(res: ServerResponse, status: number, message: string): void {
-  json(res, status, { error: { message } });
+export function fail(res: ServerResponse, status: number, message: string, code?: string): void {
+  json(res, status, { error: { message, ...(code ? { code } : {}) } });
 }
 
 /**

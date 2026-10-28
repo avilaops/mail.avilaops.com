@@ -443,7 +443,9 @@ await (async () => {
     await esperaErro("mudanca de MFA exige nova prova do Auth", () => refresh({ refreshToken: antesDoFator.refreshToken }), "revogada");
     const cookieAtual = emitir({ iat: agora + 5 });
     check("Auth pode restabelecer acesso com sessao nova", !("choose" in await loginSso({ ssoToken: cookieAtual })));
-    const sessaoStream = await loginSso({ ssoToken: emitir({ sub: "identidade-stream-auth", iat: agora + 5 }) });
+    await enviarSsf(eventoSsf("https://schemas.openid.net/secevent/caep/event-type/credential-change", agora + 6));
+    await esperaErro("prova no mesmo segundo exige recuperacao sem liberar prova antiga", () => loginSso({ ssoToken: emitir({ iat: agora + 6, mfa: true }) }), "revogada");
+    const sessaoStream = await loginSso({ ssoToken: emitir({ sub: "identidade-stream-auth", iat: agora + 7 }) });
     if ("choose" in sessaoStream) throw new Error("Stream esperava uma caixa");
     const marcaSenhaAnterior = (await prisma.mailbox.findUniqueOrThrow({ where: { id: caixa.id }, select: { mustChangePassword: true } })).mustChangePassword;
     await prisma.mailbox.update({ where: { id: caixa.id }, data: { mustChangePassword: false } });
@@ -460,7 +462,7 @@ await (async () => {
       proximo.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 150)),
     ]);
     check("SSE permanece aberto antes da revogacao", !fechouAntes);
-    await enviarSinal(sinal({ sub: "identidade-stream-auth", iat: agora + 5, exp: agora + 125 }));
+    await enviarSinal(sinal({ sub: "identidade-stream-auth", iat: agora + 7, exp: agora + 127 }));
     let streamEncerrado = false;
     try { streamEncerrado = (await proximo).done === true; } catch { /* timeout nao conta como revogacao */ }
     finally {

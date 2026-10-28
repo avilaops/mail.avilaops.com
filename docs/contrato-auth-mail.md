@@ -47,6 +47,30 @@ O corte por identidade persiste no PostgreSQL e nunca retrocede. Login e refresh
 usam o mesmo lock do corte; um aviso concorrente não permite reabrir com o JWT
 anterior. Uma nova sessão emitida pelo Auth depois do corte é aceita.
 
+O transmissor SSF também pode entregar `application/secevent+jwt` em
+`POST https://mail.avilaops.com/api/sessao/sso/sinais`. O Mail aceita os eventos
+que o Auth atual publica: sessão revogada, credencial alterada e conta desativada,
+além da verificação do canal. Esses eventos identificam o usuário por e-mail e
+mantêm um corte separado, aplicado somente às sessões SSO. A assinatura tem o
+mesmo emissor/audience, mas `typ=secevent+jwt` e sem `exp`, como o transmissor emite.
+
+Para receber esses sinais, o administrador precisa cadastrar no Auth um canal
+SSF com os tipos correspondentes e o endereço acima. O Auth exige uma integração
+autorizada a SSF e autorização de uma pessoa da equipe com `ssf.manage`/`ssf.read`.
+O Mail não cria essa autorização nem esse canal silenciosamente.
+
+Depois de um aviso recebido, novas chamadas autenticadas são recusadas e streams
+SSE já abertos revalidam a sessão a cada consulta (o intervalo padrão é oito
+segundos). Os cortes persistentes também impedem reentrada com o cookie anterior.
+
+O emissor usa precisão de segundos. Se a nova prova e a alteração de MFA caem
+no mesmo segundo, o Mail mantém o corte inclusivo e pede reautenticação, pois
+não consegue distinguir com segurança uma prova anterior de uma posterior.
+A tela de recuperação só encerra o login único após clique explícito. O Auth
+faz o POST de logout e retorna ao Mail, que aguarda 1,1 segundo antes de solicitar
+o novo login. Assim a recuperação emite uma prova após a fronteira temporal,
+sem enfraquecer a revogação nem criar um ciclo de redirects silencioso.
+
 ## Configuração e publicação
 
 Configuração da API Mail:
