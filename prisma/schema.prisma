@@ -297,6 +297,8 @@ model MailApiKey {
 model MailSession {
   id        String @id @default(cuid())
   mailboxId String @map("mailbox_id")
+  /// A origem antiga era indistinguivel; exige login unico apos a migracao.
+  authSource String @default("legacy") @map("auth_source")
 
   /// SHA-256 do refresh token. O valor em claro so existe no cliente.
   refreshHash String @unique @map("refresh_hash")

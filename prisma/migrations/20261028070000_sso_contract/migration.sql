@@ -1,4 +1,5 @@
 ALTER TABLE "mail_sessions"
+  ADD COLUMN "auth_source" TEXT NOT NULL DEFAULT 'legacy',
   ADD COLUMN "sso_subject" TEXT,
   ADD COLUMN "sso_email" TEXT,
   ADD COLUMN "sso_issued_at" TIMESTAMP(3),

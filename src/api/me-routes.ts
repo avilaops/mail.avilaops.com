@@ -411,10 +411,11 @@ async function autenticar(req: IncomingMessage, path = ""): Promise<Sessao> {
 
   const sessao = await prisma.mailSession.findFirst({
     where: { id: payload.sid, mailboxId: payload.sub, revokedAt: null, expiresAt: { gt: new Date() } },
-    select: { id: true, ssoEmail: true, mailbox: { select: { status: true, mustChangePassword: true, ownerEmail: true, localPart: true, domain: { select: { name: true } } } } },
+    select: { id: true, authSource: true, ssoEmail: true, mailbox: { select: { status: true, mustChangePassword: true, ownerEmail: true, localPart: true, domain: { select: { name: true } } } } },
   });
 
   if (!sessao) throw new AuthError("Sessao encerrada. Faca login novamente.");
+  if (sessao.authSource === "legacy") throw new AuthError("Entre novamente para atualizar seu acesso.");
   if (sessao.mailbox.status !== "active") throw new AuthError("Caixa indisponivel no momento.", 403);
   if (sessao.ssoEmail && sessao.mailbox.ownerEmail !== sessao.ssoEmail &&
       `${sessao.mailbox.localPart}@${sessao.mailbox.domain.name}` !== sessao.ssoEmail) {

@@ -119,6 +119,7 @@ async function emitirSessao(
 
   const dados = {
       mailboxId: mailbox.id,
+      authSource: contexto.sso ? "sso" : "password",
       refreshHash: hashToken(refreshToken),
       ip: contexto.ip?.slice(0, 60) ?? null,
       userAgent: contexto.userAgent?.slice(0, 300) ?? null,
@@ -470,6 +471,7 @@ export async function refresh(input: {
       select: {
         id: true,
         mailboxId: true,
+        authSource: true,
         familyId: true,
         replacementRefresh: true,
         ip: true,
@@ -497,6 +499,7 @@ export async function refresh(input: {
       },
     });
     if (!sessao) return { erro: "Sessao invalida. Faca login novamente.", status: 401 };
+    if (sessao.authSource === "legacy") return { erro: "Sessao invalida. Entre novamente para atualizar seu acesso.", status: 401 };
     const agora = new Date();
     if (sessao.expiresAt <= agora) return { erro: "Sessao expirada. Faca login novamente.", status: 401 };
     if (sessao.mailbox.status !== "active") return { erro: "Caixa indisponivel no momento.", status: 403 };
@@ -557,6 +560,7 @@ export async function refresh(input: {
     const token = randomBytes(48).toString("base64url");
     const sucessora = await tx.mailSession.create({ data: {
       mailboxId: sessao.mailboxId,
+      authSource: sessao.authSource,
       familyId: sessao.familyId ?? sessao.id,
       refreshHash: hashToken(token),
       expiresAt: sessao.expiresAt,
