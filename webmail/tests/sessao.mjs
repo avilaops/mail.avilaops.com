@@ -100,7 +100,7 @@ try {
   // Executar o cliente real permite verificar a repeticao de mutacoes, sem
   // criar uma pagina de teste dentro da aplicacao ou copiar sua logica.
   const cliente = await build({ entryPoints: ["src/lib/cliente.ts"], bundle: true, write: false, format: "iife", globalName: "MailCliente", logLevel: "silent" });
-  await contexto.addInitScript({ content: cliente.outputFiles[0].text });
+  await contexto.addInitScript({ content: `${cliente.outputFiles[0].text}\nglobalThis.MailCliente = MailCliente;` });
   const pagina = await contexto.newPage();
   const base = "https://127.0.0.1:3441";
   await pagina.goto(`${base}/entrar?local=1`);
