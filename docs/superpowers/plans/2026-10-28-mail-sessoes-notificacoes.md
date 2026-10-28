@@ -14,8 +14,8 @@
 - [x] AVL-362 — rotação atômica e contexto. Testar PostgreSQL real: chamadas concorrentes retornam a mesma sucessora, replay tardio revoga, logout antigo não ressuscita sucessora, TTL não desliza, primeiro acesso/IP/UA preservados. Arquivos: `src/services/session.ts`, schema/migration e `src/scripts/integration.ts`.
 - [ ] AVL-363 — contrato com Auth. Implementar vínculo de identidade, validação de política/MFA e revogação verificável com o contrato suportado pelo emissor. Não alterar o Auth ou ERP. Testar callback direto, conta revogada e logout global; documentar requisitos operacionais externos sem fingir que estão configurados.
 - [ ] AVL-364 — preferências e ciclo do push. Unificar política e desligamento por aparelho/conta, incluindo logout; cobrir silêncio, alertas de segurança e falha parcial.
-- [ ] AVL-365 — ativação e destino. Cruzar permissão, inscrição local, vínculo remoto e disponibilidade; teste de entrega; consumir deep link de mensagem e mantê-lo no login.
-- [ ] AVL-366 — SSE. Cursor composto, recuperação de lacunas, resumo completo, indicação de desconexão e deduplicação entre canais/abas; testes de lote, empates e revogação.
+- [x] AVL-365 — ativação e destino. Permissão, inscrição local, chave VAPID e família remota cruzadas; teste dirigido ao aparelho; deep link conservado no login. Validação operacional VAPID somente por leitura concluída; nenhum push real disparado.
+- [x] AVL-366 — SSE. Cursor caixa/sequência de chegada, recuperação de lacunas, resumo compartilhado, estado de desconexão e deduplicação no worker. Testes de lote, empates, queda e prazo de revogação passaram em cff12e9; revisão da corrida de prazo aprovada.
 
 ## Critérios transversais
 
@@ -38,4 +38,5 @@
 - VAPID operacional verificada somente por leitura: pares válidos, iguais entre processos API/MTA, contato igual; nenhuma chave impressa ou alterada. Registro detalhado em `docs/contrato-notificacoes-mail.md`.
 - AVL-366: substituí cursor por Date por caixa/seq atribuída no commit da entrega. `receivedAt` vem do header remoto e não ordena chegada nem commits. DTO compartilhado, retomada, reconciliação e deduplicação no worker implementados; RED 40656746688 confirmou DTO/cursor ausentes.
 - Actions 40658609350 (cff12e9) passou verify e session-browser, incluindo PostgreSQL, lote com empates e queda, prazo SSE com consulta pendente, worker/IndexedDB e abas concorrentes. Imagens pendentes na última consulta; ainda sem merge/deploy.
-- Reaberto AVL-364 para cobrir falha de logout remoto: BFF apagava cookies e cliente continuava mesmo quando a revogação falhava. RED 40659079888 (c51b8c9) confirmou 200 indevido no lugar de 503. BFF e cliente agora exigem sucesso da revogação; o botão exibe falha e permite repetir. GREEN do HEAD final pendente.
+- Reaberto AVL-364 para cobrir falha de logout remoto: BFF apagava cookies e cliente continuava mesmo quando a revogação falhava. RED 40659079888 (c51b8c9) confirmou 200 indevido no lugar de 503. BFF e cliente agora exigem sucesso da revogação; o botão exibe falha e permite repetir.
+- A revisão encontrou também conclusão direta em GET abandonando a família. RED 40659741390 (61f1495) confirmou limpeza/conclusão indevida; a rota agora conserva sessão e não conclui saída global antes do DELETE. O HEAD com esse complemento precisa passar a suíte e as duas imagens antes de promover o PR; evidência final fica também no PR e nos tickets.

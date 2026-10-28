@@ -34,6 +34,9 @@ autorizado. Falha remota preserva o estado e permite tentar novamente.
 O logout segue a mesma regra: só apaga os cookies e segue ao encerramento global
 depois que a API confirma a revogação da família. Falha remota mantém a sessão
 para repetir o pedido e aparece no botão Sair.
+A conclusão em `GET /api/sessao/sair` não apaga cookies nem inicia a saída
+global enquanto recebe sessão Mail. Acessar diretamente essa URL conserva a
+prova necessária para a revogação protegida no DELETE.
 
 ## Continuidade e dados
 
