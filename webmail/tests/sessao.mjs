@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
-import { spawn } from "node:child_process";
+import { createServer, request as encaminharHttp } from "node:http";
+import { createServer as criarProxyHttps } from "node:https";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { chromium } from "playwright";
 
 // Somente GitHub CI: navegador e Next reais; a API controlada permite vencer
@@ -50,8 +54,26 @@ const backend = createServer(async (req, res) => {
 });
 backend.listen(3040, "127.0.0.1");
 await once(backend, "listening");
+// A CSP promove redirects de fetch para HTTPS. Reproduzir o TLS do proxy de
+// producao tambem verifica cookies Secure; desabilitar a CSP esconderia isso.
+const temporario = mkdtempSync(join(tmpdir(), "mail-sessao-ci-"));
+const chave = join(temporario, "key.pem");
+const certificado = join(temporario, "cert.pem");
+execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", chave, "-out", certificado, "-days", "1", "-subj", "/CN=localhost"], { stdio: "ignore" });
+const tls = criarProxyHttps({ key: readFileSync(chave), cert: readFileSync(certificado) }, (req, res) => {
+  const upstream = encaminharHttp({ hostname: "127.0.0.1", port: 3041, path: req.url, method: req.method,
+    headers: { ...req.headers, "x-forwarded-proto": "https", "x-forwarded-host": "127.0.0.1:3441" } }, (origem) => {
+    res.writeHead(origem.statusCode, origem.headers);
+    origem.pipe(res);
+  });
+  upstream.on("error", () => { if (!res.headersSent) res.writeHead(502); res.end(); });
+  res.on("close", () => upstream.destroy());
+  req.pipe(upstream);
+});
+tls.listen(3441, "127.0.0.1");
+await once(tls, "listening");
 const next = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "-p", "3041"], {
-  env: { ...process.env, COOKIE_SECURE: "false", SSO_ENABLED: "false", AGENDA_ENABLED: "false", WEBMAIL_URL: "http://127.0.0.1:3041", MAIL_API_URL: "http://127.0.0.1:3040/v1" },
+  env: { ...process.env, COOKIE_SECURE: "true", SSO_ENABLED: "false", AGENDA_ENABLED: "false", WEBMAIL_URL: "https://127.0.0.1:3441", MAIL_API_URL: "http://127.0.0.1:3040/v1" },
   stdio: ["ignore", "ignore", "inherit"],
 });
 let browser;
@@ -62,13 +84,9 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   browser = await chromium.launch({ headless: true });
-  const contexto = await browser.newContext();
+  const contexto = await browser.newContext({ ignoreHTTPSErrors: true });
   const pagina = await contexto.newPage();
-  pagina.on("requestfailed", (req) => console.error("CI falha de rede", new URL(req.url()).pathname, req.failure()?.errorText));
-  pagina.on("response", (res) => {
-    if (res.status() >= 300 && res.status() < 400) console.log("CI redirect", res.status(), new URL(res.url()).pathname, res.headers().location);
-  });
-  const base = "http://127.0.0.1:3041";
+  const base = "https://127.0.0.1:3441";
   await pagina.goto(`${base}/entrar?local=1`);
   const login = async () => {
     assert.equal(await pagina.evaluate(async () => (await fetch("/api/sessao", {
@@ -100,6 +118,7 @@ try {
   assert.equal(csrf?.httpOnly, false);
   const rt = (await contexto.cookies()).find((cookie) => cookie.name === "avila_mail_rt_v2");
   assert.equal(rt?.httpOnly, true);
+  assert.equal(rt?.secure, true);
   assert.equal(rt?.path, "/");
   assert.ok(rt.expires - Date.now() / 1000 < 3601, "cookie respeita o TTL da API");
   await contexto.clearCookies();
@@ -120,6 +139,9 @@ try {
 } finally {
   await browser?.close();
   next.kill("SIGTERM");
+  tls.closeAllConnections();
+  await new Promise((resolve) => tls.close(resolve));
   backend.closeAllConnections();
   await new Promise((resolve) => backend.close(resolve));
+  rmSync(temporario, { recursive: true, force: true });
 }
