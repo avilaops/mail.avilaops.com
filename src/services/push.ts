@@ -190,7 +190,7 @@ export async function avisoPermitido(mailboxId: string, aviso: AvisoPush, agora 
   if (aviso.tipo === "seguranca") return true;
 
   const prefs = await prisma.mailboxSettings.findUnique({
-    where: { mailboxId, familyId: { in: await familiasAtivas(mailboxId) } },
+    where: { mailboxId },
     select: { notifyEnabled: true, notifyQuietStart: true, notifyQuietEnd: true, notifyOnlyInbox: true },
   });
   if (!prefs) return true;
@@ -215,7 +215,7 @@ export async function enviarAviso(mailboxId: string, aviso: AvisoPush): Promise<
   garantirConfiguracao();
 
   const inscricoes = await prisma.mailPushSubscription.findMany({
-    where: { mailboxId },
+    where: { mailboxId, familyId: { in: await familiasAtivas(mailboxId) } },
     select: { id: true, endpoint: true, p256dh: true, auth: true },
   });
   if (inscricoes.length === 0) return { tentativas: 0, enviados: 0 };
