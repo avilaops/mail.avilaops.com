@@ -461,30 +461,30 @@ export async function refresh(input: {
     if (!referencia) return { erro: "Sessao invalida. Faca login novamente.", status: 401 };
     await tx.$queryRaw`SELECT id FROM mail_mailboxes WHERE id = ${referencia.mailboxId} FOR UPDATE`;
     const sessao = await tx.mailSession.findUnique({
-    where: { refreshHash: hash },
-    select: {
-      id: true,
-      mailboxId: true,
-      familyId: true,
-      replacementRefresh: true,
-      ip: true,
-      userAgent: true,
-      location: true,
-      revokedAt: true,
-      expiresAt: true,
-      mailbox: {
-        select: {
-          id: true,
-          localPart: true,
-          displayName: true,
-          status: true,
-          quotaBytes: true,
-          usedBytes: true,
-          mustChangePassword: true,
-          domain: { select: { name: true } },
+      where: { refreshHash: hash },
+      select: {
+        id: true,
+        mailboxId: true,
+        familyId: true,
+        replacementRefresh: true,
+        ip: true,
+        userAgent: true,
+        location: true,
+        revokedAt: true,
+        expiresAt: true,
+        mailbox: {
+          select: {
+            id: true,
+            localPart: true,
+            displayName: true,
+            status: true,
+            quotaBytes: true,
+            usedBytes: true,
+            mustChangePassword: true,
+            domain: { select: { name: true } },
+          },
         },
       },
-    },
     });
     if (!sessao) return { erro: "Sessao invalida. Faca login novamente.", status: 401 };
     const agora = new Date();
@@ -500,8 +500,11 @@ export async function refresh(input: {
         refreshToken,
         expiresInSeconds: Math.min(config.session.accessTokenMinutes * 60, restante),
         refreshExpiresInSeconds: restante,
-        mailbox: { id: mailbox.id, address, displayName: mailbox.displayName,
-          quotaBytes: mailbox.quotaBytes.toString(), usedBytes: mailbox.usedBytes.toString(), mustChangePassword: mailbox.mustChangePassword },
+        mailbox: {
+          id: mailbox.id, address, displayName: mailbox.displayName,
+          quotaBytes: mailbox.quotaBytes.toString(), usedBytes: mailbox.usedBytes.toString(),
+          mustChangePassword: mailbox.mustChangePassword,
+        },
       };
     };
 
@@ -514,17 +517,21 @@ export async function refresh(input: {
         return { erro: "Sessao invalida. Faca login novamente.", status: 401 };
       }
       await tx.mailSession.updateMany({
-      where: { mailboxId: sessao.mailboxId, revokedAt: null },
-      data: { revokedAt: agora, replacementRefresh: null },
-    });
-    await tx.mailEvent.create({
-      data: {
-        mailboxId: sessao.mailboxId,
-        type: "session.reuse_detected",
-        severity: "error",
-        payload: { sessionId: sessao.id, ip: input.ip ?? null },
-      },
-    });
+        where: { mailboxId: sessao.mailboxId, revokedAt: null },
+        data: { revokedAt: agora, replacementRefresh: null },
+      });
+      await tx.mailSession.updateMany({
+        where: { mailboxId: sessao.mailboxId, replacementRefresh: { not: null } },
+        data: { replacementRefresh: null },
+      });
+      await tx.mailEvent.create({
+        data: {
+          mailboxId: sessao.mailboxId,
+          type: "session.reuse_detected",
+          severity: "error",
+          payload: { sessionId: sessao.id, ip: input.ip ?? null },
+        },
+      });
       return { erro: "Sessao invalida. Faca login novamente.", status: 401 };
     }
 
@@ -565,10 +572,15 @@ export async function logout(refreshToken: string): Promise<void> {
 export async function logoutAll(mailboxId: string): Promise<{ revoked: number }> {
   const resultado = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM mail_mailboxes WHERE id = ${mailboxId} FOR UPDATE`;
-    return tx.mailSession.updateMany({
+    const revogadas = await tx.mailSession.updateMany({
       where: { mailboxId, revokedAt: null },
       data: { revokedAt: new Date(), replacementRefresh: null },
     });
+    await tx.mailSession.updateMany({
+      where: { mailboxId, replacementRefresh: { not: null } },
+      data: { replacementRefresh: null },
+    });
+    return revogadas;
   });
   return { revoked: resultado.count };
 }

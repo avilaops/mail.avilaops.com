@@ -42,13 +42,20 @@ export async function api<T>(
     if (opcoes.body !== undefined) cabecalhos["Content-Type"] = "application/json";
   }
 
-  const resposta = await fetch(`/api/mail${caminho}`, {
+  const requisitar = () => fetch(`/api/mail${caminho}`, {
     method: metodo,
     headers: cabecalhos,
     body: opcoes.body === undefined ? undefined : JSON.stringify(opcoes.body),
     // Cookie httpOnly precisa acompanhar a requisicao.
     credentials: "same-origin",
   });
+  let resposta = await requisitar();
+  if (resposta.status === 401 && resposta.headers.get("x-mail-retomar") === "1") {
+    const renovada = await fetch("/api/sessao/retomar", {
+      method: "POST", headers: { "x-csrf-token": tokenCsrf() }, credentials: "same-origin",
+    });
+    resposta = renovada.ok ? await requisitar() : renovada;
+  }
 
   const texto = await resposta.text();
   const corpo: unknown = texto ? JSON.parse(texto) : null;
