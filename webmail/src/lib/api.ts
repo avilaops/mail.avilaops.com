@@ -1,4 +1,4 @@
-import { gravarSessao, tokenDeAcesso, tokenDeRefresh } from "@/lib/sessao";
+import { gravarSessao, tokenDeAcesso, tokenDeRefresh, type TokensSessao } from "@/lib/sessao";
 
 /**
  * Cliente da API do servidor de e-mail — roda so no servidor.
@@ -110,13 +110,13 @@ export async function chamarComSessao<T>(
   const refresh = await tokenDeRefresh();
   if (!refresh) return { ok: false, status: 401, dados: null, erro: "Sessao encerrada." };
 
-  const renovada = await chamarApi<{ accessToken: string; refreshToken: string; expiresInSeconds: number }>(
+  const renovada = await chamarApi<TokensSessao>(
     "/auth/refresh",
-    { method: "POST", body: { refreshToken: refresh } },
+    { method: "POST", body: { refreshToken: refresh }, origem: opcoes.origem },
   );
 
   if (!renovada.ok || !renovada.dados) {
-    return { ok: false, status: 401, dados: null, erro: "Sessao encerrada." };
+    return { ok: false, status: renovada.ok ? 502 : renovada.status, dados: null, erro: renovada.erro ?? "Nao foi possivel renovar a sessao." };
   }
 
   await gravarSessao(renovada.dados);
@@ -133,34 +133,38 @@ export async function chamarComSessao<T>(
  */
 export async function chamarBrutoComSessao(
   caminho: string,
-  opcoes: { semTempoLimite?: boolean } = {},
-): Promise<Response | null> {
+  opcoes: { semTempoLimite?: boolean; origem?: OrigemCliente; signal?: AbortSignal } = {},
+): Promise<Response> {
+  const indisponivel = () => Response.json({ erro: "Servidor de e-mail indisponivel. Tente novamente." }, { status: 502 });
   const buscar = async (token: string) =>
     fetch(`${BASE}${caminho}`, {
       headers: { Authorization: `Bearer ${token}` },
       cache: "no-store",
       // Fluxo de eventos fica aberto por minutos de proposito; um tempo limite
       // aqui o mataria no meio e o cliente veria a conexao cair sozinha.
-      signal: opcoes.semTempoLimite ? undefined : AbortSignal.timeout(60_000),
+      signal: opcoes.semTempoLimite ? opcoes.signal : AbortSignal.timeout(60_000),
     });
 
   const acesso = await tokenDeAcesso();
 
   if (acesso) {
-    const resposta = await buscar(acesso).catch(() => null);
-    if (resposta && resposta.status !== 401) return resposta;
+    const resposta = await buscar(acesso).catch(indisponivel);
+    if (resposta.status !== 401) return resposta;
+    await resposta.body?.cancel();
   }
 
   const refresh = await tokenDeRefresh();
-  if (!refresh) return null;
+  if (!refresh) return Response.json({ erro: "Sessao encerrada." }, { status: 401 });
 
-  const renovada = await chamarApi<{ accessToken: string; refreshToken: string; expiresInSeconds: number }>(
+  const renovada = await chamarApi<TokensSessao>(
     "/auth/refresh",
-    { method: "POST", body: { refreshToken: refresh } },
+    { method: "POST", body: { refreshToken: refresh }, origem: opcoes.origem },
   );
 
-  if (!renovada.ok || !renovada.dados) return null;
+  if (!renovada.ok || !renovada.dados) {
+    return Response.json({ erro: renovada.erro ?? "Nao foi possivel renovar a sessao." }, { status: renovada.ok ? 502 : renovada.status });
+  }
 
   await gravarSessao(renovada.dados);
-  return buscar(renovada.dados.accessToken).catch(() => null);
+  return buscar(renovada.dados.accessToken).catch(indisponivel);
 }

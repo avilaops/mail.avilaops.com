@@ -300,6 +300,10 @@ model MailSession {
 
   /// SHA-256 do refresh token. O valor em claro so existe no cliente.
   refreshHash String @unique @map("refresh_hash")
+  /// Raiz do aparelho; conserva revogacao mesmo apos a rotacao.
+  familyId String? @map("family_id")
+  /// Sucessor cifrado, reapresentavel por 10s para requests concorrentes.
+  replacementRefresh String? @map("replacement_refresh") @db.Text
 
   userAgent String? @map("user_agent") @db.VarChar(300)
   ip        String? @db.VarChar(60)
@@ -315,6 +319,7 @@ model MailSession {
   mailbox Mailbox @relation(fields: [mailboxId], references: [id], onDelete: Cascade)
 
   @@index([mailboxId, expiresAt])
+  @@index([familyId])
   @@map("mail_sessions")
 }
 

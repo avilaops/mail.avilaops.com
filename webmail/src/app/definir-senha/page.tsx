@@ -14,7 +14,7 @@ export const dynamic = "force-dynamic";
  * evita a tela aparecer à toa.
  */
 export default async function DefinirSenhaPage() {
-  if (!(await temSessao())) redirect("/entrar");
+  if (!(await temSessao())) redirect("/api/sessao/retomar?returnTo=/definir-senha");
   if (!(await precisaTrocarSenha())) redirect("/caixa");
   return <DefinirSenha />;
 }

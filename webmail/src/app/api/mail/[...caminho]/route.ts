@@ -62,10 +62,11 @@ async function encaminhar(request: NextRequest, caminho: string[]): Promise<Next
   // resposta inteira para reserializar em JSON, como as demais rotas, travaria
   // a conexao para sempre — o stream nunca "termina".
   if (request.method === "GET" && rota === "me/events") {
-    const fluxo = await chamarBrutoComSessao(destino, { semTempoLimite: true });
+    const fluxo = await chamarBrutoComSessao(destino, { semTempoLimite: true, origem: origemDaRequisicao(request), signal: request.signal });
 
-    if (!fluxo?.ok || !fluxo.body) {
-      return NextResponse.json({ erro: "Sessao encerrada. Entre novamente." }, { status: 401 });
+    if (!fluxo.ok || !fluxo.body) {
+      if (fluxo.status === 401) await limparSessao();
+      return NextResponse.json({ erro: fluxo.status === 401 ? "Sessao encerrada. Entre novamente." : "Nao foi possivel conectar os avisos. Tente novamente." }, { status: fluxo.ok ? 502 : fluxo.status });
     }
 
     return new NextResponse(fluxo.body, {
@@ -83,9 +84,9 @@ async function encaminhar(request: NextRequest, caminho: string[]): Promise<Next
   // define. Reserializar como JSON corromperia o arquivo e derrubaria o
   // Content-Disposition que impede um anexo HTML de abrir na nossa origem.
   if (request.method === "GET" && EH_DOWNLOAD.test(destino)) {
-    const bruta = await chamarBrutoComSessao(destino);
+    const bruta = await chamarBrutoComSessao(destino, { origem: origemDaRequisicao(request) });
 
-    if (!bruta) {
+    if (bruta.status === 401) {
       await limparSessao();
       return NextResponse.json({ erro: "Sessao encerrada. Entre novamente." }, { status: 401 });
     }
@@ -119,6 +120,7 @@ async function encaminhar(request: NextRequest, caminho: string[]): Promise<Next
   const ifMatch = request.headers.get("if-match");
   const resposta = await chamarComSessao<unknown>(destino, {
     method: request.method,
+    origem: origemDaRequisicao(request),
     body: corpo,
     ...(ifMatch ? { headers: { "If-Match": ifMatch } } : {}),
   });

@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export default async function Caixa() {
   // Corta a viagem: sem cookie de sessao nao adianta montar a interface para
   // ela descobrir o 401 na primeira chamada e redirecionar depois.
-  if (!(await temSessao())) redirect("/entrar");
+  if (!(await temSessao())) redirect("/api/sessao/retomar?returnTo=/caixa");
 
   return <PainelCaixa agendaHabilitada={await agendaDisponivel()} />;
 }

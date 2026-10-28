@@ -250,6 +250,38 @@ await esperaErro("apos reuso, o refresh novo tambem cai", () =>
 const eventoReuso = await prisma.mailEvent.findFirst({ where: { type: "session.reuse_detected" } });
 check("reuso vira evento de auditoria", eventoReuso !== null);
 
+const { logout, logoutAll, revokeSession } = await import("../services/session.js");
+const { createHash } = await import("node:crypto");
+const hashRefresh = (token: string) => createHash("sha256").update(token).digest("hex");
+const comContexto = await login({ address: "contato@brilhax.com.br", password: SENHA, ip: "203.0.113.9", userAgent: "Navegador de teste" });
+const sessaoOriginal = await prisma.mailSession.findUniqueOrThrow({ where: { refreshHash: hashRefresh(comContexto.refreshToken) } });
+const emParalelo = await Promise.all(Array.from({ length: 6 }, () => refresh({ refreshToken: comContexto.refreshToken })));
+check("primeira rotacao concorrente cria uma unica sucessora", new Set(emParalelo.map((item) => item.refreshToken)).size === 1);
+const sucessora = await prisma.mailSession.findUniqueOrThrow({ where: { refreshHash: hashRefresh(emParalelo[0]!.refreshToken) } });
+check("rotacao preserva expiracao absoluta", sucessora.expiresAt.getTime() === sessaoOriginal.expiresAt.getTime());
+check("refresh informa TTL restante", emParalelo[0]!.refreshExpiresInSeconds > 0 && emParalelo[0]!.refreshExpiresInSeconds <= 30 * 86400);
+check("rotacao preserva IP e navegador", sucessora.ip === sessaoOriginal.ip && sucessora.userAgent === sessaoOriginal.userAgent);
+check("rotacao preserva primeiro acesso", emParalelo[0]!.mailbox.mustChangePassword === comContexto.mailbox.mustChangePassword);
+await logout(comContexto.refreshToken);
+await esperaErro("logout pelo token anterior revoga a sucessora", () => refresh({ refreshToken: emParalelo[0]!.refreshToken }), "invalida");
+await esperaErro("logout nao admite janela de concorrencia", () => refresh({ refreshToken: comContexto.refreshToken }), "invalida");
+
+const outra = await login({ address: "contato@brilhax.com.br", password: SENHA });
+await esperaErro("request atrasado apos logout continua recusado", () => refresh({ refreshToken: comContexto.refreshToken }), "invalida");
+check("request apos logout nao derruba outro aparelho", (await refresh({ refreshToken: outra.refreshToken })).accessToken.length > 0);
+
+const revogarDurante = await login({ address: "contato@brilhax.com.br", password: SENHA });
+const durante = await Promise.allSettled([refresh({ refreshToken: revogarDurante.refreshToken }), logoutAll(caixa.id)]);
+const resultadoDurante = durante[0];
+if (resultadoDurante?.status === "fulfilled") {
+  await esperaErro("sair de todos concorre com rotacao sem deixar sucessora viva", () => refresh({ refreshToken: resultadoDurante.value.refreshToken }), "invalida");
+}
+const aparelho = await login({ address: "contato@brilhax.com.br", password: SENHA });
+const idAparelho = verifyAccessToken(aparelho.accessToken)!.sid;
+const novoAparelho = await refresh({ refreshToken: aparelho.refreshToken });
+await revokeSession(caixa.id, idAparelho);
+await esperaErro("revogar aparelho pelo id antigo revoga a familia", () => refresh({ refreshToken: novoAparelho.refreshToken }), "invalida");
+
 console.log("\n[6] Forca bruta: bloqueia o atacante sem trancar o cliente");
 await createMailbox({ domain: "brilhax.com.br", username: "alvo", password: SENHA });
 

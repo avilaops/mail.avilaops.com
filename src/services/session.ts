@@ -105,6 +105,7 @@ export interface SessionTokens {
   accessToken: string;
   refreshToken: string;
   expiresInSeconds: number;
+  refreshExpiresInSeconds: number;
   mailbox: {
     id: string;
     address: string;
@@ -158,6 +159,7 @@ async function emitirSessao(
     accessToken: signAccessToken({ sub: mailbox.id, adr: address, sid: sessao.id }),
     refreshToken,
     expiresInSeconds: config.session.accessTokenMinutes * 60,
+    refreshExpiresInSeconds: Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000)),
     mailbox: {
       id: mailbox.id,
       address,
@@ -442,9 +444,9 @@ export async function disableTotp(mailboxId: string, code: string): Promise<void
 /**
  * Troca o refresh por um par novo, invalidando o anterior (rotacao).
  *
- * Se chegar um refresh que ja foi usado, o cenario mais provavel e roubo de
- * token: o legitimo e o ladrao estao alternando. A resposta e derrubar todas
- * as sessoes da caixa e obrigar login novo.
+ * Requests concorrentes podem carregar o mesmo cookie. Durante 10s uma
+ * rotacao confirmada devolve a mesma sucessora; logout nunca usa essa janela.
+ * Fora dela, reuso continua revogando as sessoes da caixa.
  */
 export async function refresh(input: {
   refreshToken: string;
@@ -453,11 +455,21 @@ export async function refresh(input: {
 }): Promise<SessionTokens> {
   const hash = hashToken(input.refreshToken);
 
-  const sessao = await prisma.mailSession.findUnique({
+  const resultado = await prisma.$transaction(async (tx) => {
+    // Mesma ordem de locks para rotacao, replay e revogacao de aparelhos.
+    const referencia = await tx.mailSession.findUnique({ where: { refreshHash: hash }, select: { mailboxId: true } });
+    if (!referencia) return { erro: "Sessao invalida. Faca login novamente.", status: 401 };
+    await tx.$queryRaw`SELECT id FROM mail_mailboxes WHERE id = ${referencia.mailboxId} FOR UPDATE`;
+    const sessao = await tx.mailSession.findUnique({
     where: { refreshHash: hash },
     select: {
       id: true,
       mailboxId: true,
+      familyId: true,
+      replacementRefresh: true,
+      ip: true,
+      userAgent: true,
+      location: true,
       revokedAt: true,
       expiresAt: true,
       mailbox: {
@@ -468,20 +480,44 @@ export async function refresh(input: {
           status: true,
           quotaBytes: true,
           usedBytes: true,
+          mustChangePassword: true,
           domain: { select: { name: true } },
         },
       },
     },
-  });
-
-  if (!sessao) throw new AuthError("Sessao invalida. Faca login novamente.");
-
-  if (sessao.revokedAt) {
-    await prisma.mailSession.updateMany({
-      where: { mailboxId: sessao.mailboxId, revokedAt: null },
-      data: { revokedAt: new Date() },
     });
-    await prisma.mailEvent.create({
+    if (!sessao) return { erro: "Sessao invalida. Faca login novamente.", status: 401 };
+    const agora = new Date();
+    if (sessao.expiresAt <= agora) return { erro: "Sessao expirada. Faca login novamente.", status: 401 };
+    if (sessao.mailbox.status !== "active") return { erro: "Caixa indisponivel no momento.", status: 403 };
+
+    const montar = (id: string, refreshToken: string): SessionTokens => {
+      const mailbox = sessao.mailbox;
+      const address = `${mailbox.localPart}@${mailbox.domain.name}`;
+      const restante = Math.max(0, Math.floor((sessao.expiresAt.getTime() - agora.getTime()) / 1000));
+      return {
+        accessToken: signAccessToken({ sub: mailbox.id, adr: address, sid: id }),
+        refreshToken,
+        expiresInSeconds: Math.min(config.session.accessTokenMinutes * 60, restante),
+        refreshExpiresInSeconds: restante,
+        mailbox: { id: mailbox.id, address, displayName: mailbox.displayName,
+          quotaBytes: mailbox.quotaBytes.toString(), usedBytes: mailbox.usedBytes.toString(), mustChangePassword: mailbox.mustChangePassword },
+      };
+    };
+
+    if (sessao.revokedAt) {
+      if (!sessao.replacementRefresh) return { erro: "Sessao invalida. Faca login novamente.", status: 401 };
+      if (agora.getTime() - sessao.revokedAt.getTime() <= 10_000) {
+        const token = decryptSecret(sessao.replacementRefresh);
+        const sucessora = await tx.mailSession.findUnique({ where: { refreshHash: hashToken(token) } });
+        if (sucessora && !sucessora.revokedAt && sucessora.expiresAt > agora) return { tokens: montar(sucessora.id, token) };
+        return { erro: "Sessao invalida. Faca login novamente.", status: 401 };
+      }
+      await tx.mailSession.updateMany({
+      where: { mailboxId: sessao.mailboxId, revokedAt: null },
+      data: { revokedAt: agora, replacementRefresh: null },
+    });
+    await tx.mailEvent.create({
       data: {
         mailboxId: sessao.mailboxId,
         type: "session.reuse_detected",
@@ -489,32 +525,50 @@ export async function refresh(input: {
         payload: { sessionId: sessao.id, ip: input.ip ?? null },
       },
     });
-    log.error("refresh token reutilizado; todas as sessoes da caixa foram revogadas", {
+      return { erro: "Sessao invalida. Faca login novamente.", status: 401 };
+    }
+
+    const token = randomBytes(48).toString("base64url");
+    const sucessora = await tx.mailSession.create({ data: {
       mailboxId: sessao.mailboxId,
-      ip: input.ip,
-    });
-    throw new AuthError("Sessao invalida. Faca login novamente.");
-  }
-
-  if (sessao.expiresAt <= new Date()) throw new AuthError("Sessao expirada. Faca login novamente.");
-  if (sessao.mailbox.status !== "active") throw new AuthError("Caixa indisponivel no momento.", 403);
-
-  await prisma.mailSession.update({ where: { id: sessao.id }, data: { revokedAt: new Date() } });
-
-  return emitirSessao(sessao.mailbox, { ip: input.ip, userAgent: input.userAgent });
+      familyId: sessao.familyId ?? sessao.id,
+      refreshHash: hashToken(token),
+      expiresAt: sessao.expiresAt,
+      ip: input.ip?.slice(0, 60) ?? sessao.ip,
+      userAgent: input.userAgent?.slice(0, 300) ?? sessao.userAgent,
+      location: input.ip && input.ip !== sessao.ip ? null : sessao.location,
+    }, select: { id: true } });
+    await tx.mailSession.update({ where: { id: sessao.id }, data: {
+      revokedAt: agora, replacementRefresh: encryptSecret(token),
+    } });
+    return { tokens: montar(sucessora.id, token) };
+  });
+  // A revogacao por replay precisa ser commitada antes de lancar o erro.
+  if (resultado.tokens) return resultado.tokens;
+  throw new AuthError(resultado.erro ?? "Sessao invalida.", resultado.status ?? 401);
 }
 
 export async function logout(refreshToken: string): Promise<void> {
-  await prisma.mailSession.updateMany({
-    where: { refreshHash: hashToken(refreshToken), revokedAt: null },
-    data: { revokedAt: new Date() },
+  await prisma.$transaction(async (tx) => {
+    const hash = hashToken(refreshToken);
+    const sessao = await tx.mailSession.findUnique({ where: { refreshHash: hash } });
+    if (!sessao) return;
+    await tx.$queryRaw`SELECT id FROM mail_mailboxes WHERE id = ${sessao.mailboxId} FOR UPDATE`;
+    const raiz = sessao.familyId ?? sessao.id;
+    await tx.mailSession.updateMany({
+      where: { mailboxId: sessao.mailboxId, OR: [{ id: raiz }, { familyId: raiz }] },
+      data: { revokedAt: new Date(), replacementRefresh: null },
+    });
   });
 }
 
 export async function logoutAll(mailboxId: string): Promise<{ revoked: number }> {
-  const resultado = await prisma.mailSession.updateMany({
-    where: { mailboxId, revokedAt: null },
-    data: { revokedAt: new Date() },
+  const resultado = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM mail_mailboxes WHERE id = ${mailboxId} FOR UPDATE`;
+    return tx.mailSession.updateMany({
+      where: { mailboxId, revokedAt: null },
+      data: { revokedAt: new Date(), replacementRefresh: null },
+    });
   });
   return { revoked: resultado.count };
 }
@@ -526,13 +580,20 @@ export async function logoutAll(mailboxId: string): Promise<{ revoked: number }>
  * derrubaria a sessao de qualquer outra caixa passando o id certo.
  */
 export async function revokeSession(mailboxId: string, sessionId: string): Promise<{ revoked: boolean }> {
-  const resultado = await prisma.mailSession.updateMany({
-    where: { id: sessionId, mailboxId, revokedAt: null },
-    data: { revokedAt: new Date() },
-  });
-
-  if (resultado.count === 0) throw new AuthError("Sessao nao encontrada.", 404);
+  const sessao = await prisma.mailSession.findFirst({ where: { id: sessionId, mailboxId } });
+  if (!sessao) throw new AuthError("Sessao nao encontrada.", 404);
+  await logoutByFamily(mailboxId, sessao.familyId ?? sessao.id);
   return { revoked: true };
+}
+
+async function logoutByFamily(mailboxId: string, familyId: string): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM mail_mailboxes WHERE id = ${mailboxId} FOR UPDATE`;
+    await tx.mailSession.updateMany({
+      where: { mailboxId, OR: [{ id: familyId }, { familyId }] },
+      data: { revokedAt: new Date(), replacementRefresh: null },
+    });
+  });
 }
 
 export async function listSessions(mailboxId: string) {

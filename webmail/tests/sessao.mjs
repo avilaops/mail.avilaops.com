@@ -51,7 +51,7 @@ const backend = createServer(async (req, res) => {
 backend.listen(3040, "127.0.0.1");
 await once(backend, "listening");
 const next = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "-p", "3041"], {
-  env: { ...process.env, COOKIE_SECURE: "false", SSO_ENABLED: "false", AGENDA_ENABLED: "false", MAIL_API_URL: "http://127.0.0.1:3040/v1" },
+  env: { ...process.env, COOKIE_SECURE: "false", SSO_ENABLED: "false", AGENDA_ENABLED: "false", WEBMAIL_URL: "http://127.0.0.1:3041", MAIL_API_URL: "http://127.0.0.1:3040/v1" },
   stdio: ["ignore", "ignore", "inherit"],
 });
 let browser;
@@ -81,22 +81,30 @@ try {
   await pagina.goto(`${base}/caixa`);
   assert.equal(new URL(pagina.url()).pathname, "/caixa", "reabrir caixa com refresh valido nao pede login");
   assert.equal((await pedir("/api/mail/me")).status, 200, "JSON renova acesso vencido");
+  await pagina.goto(`${base}/entrar?local=1`);
 
   for (const caminho of ["/api/mail/me", "/api/mail/me/messages/teste/raw", "/api/mail/me/events"]) {
     await login();
     await pagina.waitForTimeout(2300);
     indisponivel = true;
     assert.equal((await pedir(caminho)).status, 502, "falha transitoria preserva status");
-    assert.ok((await contexto.cookies()).some((cookie) => cookie.name === "avila_mail_rt"), "refresh preservado durante falha");
+    assert.ok((await contexto.cookies()).some((cookie) => cookie.name === "avila_mail_rt_v2"), "refresh preservado durante falha");
     indisponivel = false;
     assert.equal((await pedir(caminho)).status, 200, "mesmo request recupera sem autenticar novamente");
   }
   const csrf = (await contexto.cookies()).find((cookie) => cookie.name === "avila_mail_csrf");
   assert.equal(csrf?.httpOnly, false);
-  const rt = (await contexto.cookies()).find((cookie) => cookie.name === "avila_mail_rt");
+  const rt = (await contexto.cookies()).find((cookie) => cookie.name === "avila_mail_rt_v2");
   assert.equal(rt?.httpOnly, true);
   assert.equal(rt?.path, "/");
   assert.ok(rt.expires - Date.now() / 1000 < 3601, "cookie respeita o TTL da API");
+  await contexto.clearCookies();
+  const legado = tokens();
+  await contexto.addCookies([{ name: "avila_mail_rt", value: legado.refreshToken, domain: "127.0.0.1", path: "/api/sessao", httpOnly: true, sameSite: "Strict" }]);
+  await pagina.goto(`${base}/caixa`);
+  assert.equal(new URL(pagina.url()).pathname, "/caixa", "cookie legado migra sem novo login");
+  assert.equal((await contexto.cookies()).some((cookie) => cookie.name === "avila_mail_rt"), false, "cookie legado removido");
+  assert.equal((await pedir("/api/mail/me")).status, 200);
   console.log("PASSOU — sessao real no navegador: reabertura, renovacao, JSON/download/SSE, recuperacao e cookies");
 } finally {
   await browser?.close();
