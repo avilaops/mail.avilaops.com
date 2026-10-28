@@ -43,7 +43,7 @@ import { createRule, deleteRule, listRules, updateRule } from "../services/rules
 import { autenticarChave, criarChave, ehAdministrador, escopoDoToken, listarChaves, revogarChave, type ApiKeyScope } from "../services/apiKeys.js";
 import { handleAdminRoute } from "./admin-routes.js";
 import { chavePublica, listarInscricoes, pushDisponivel, registrarInscricao, removerInscricao } from "../services/push.js";
-import { receberLogoutSso } from "../services/ssoRevocation.js";
+import { receberLogoutSso, receberSinalSso } from "../services/ssoRevocation.js";
 import { getCalendarSettings, getSettings, updateCalendarSettings, updateProfile, updateSettings } from "../services/settings.js";
 import { listSendAs, searchContacts } from "../services/contacts.js";
 import { deleteUpload, listUploads, storeUpload } from "../services/uploads.js";
@@ -308,12 +308,16 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId
     res.end();
   };
 
-  req.on("close", encerrar);
+  // IncomingMessage termina quando o request GET acaba, nao quando o stream
+  // da resposta acaba. O dono desta conexao longa e o ServerResponse.
+  res.once("close", encerrar);
 
   const timer = setInterval(() => {
     void (async () => {
       if (!ativo) return;
       try {
+        // Logout/suspensao/troca de dono tambem encerram conexoes ja abertas.
+        await autenticar(req, "/v1/me/events");
         const [novas, caixa, lembretes] = await Promise.all([
           prisma.message.findMany({
             where: { mailboxId, receivedAt: { gt: ultimoVisto }, folder: { kind: "inbox" } },
@@ -462,6 +466,12 @@ export async function handleUserRoute(
   }
 
   // Login pelo SSO (auth.avilaops.com): o webmail repassa o cookie avila_sso.
+  if (path === "/v1/auth/sso/events" && method === "POST") {
+    const input = z.object({ securityEventToken: z.string().min(20).max(8192) }).parse(await readBody(req));
+    json(res, 200, await receberSinalSso(input.securityEventToken));
+    return true;
+  }
+
   if (path === "/v1/auth/sso/logout" && method === "POST") {
     const input = z.object({ logoutToken: z.string().min(20).max(8192) }).parse(await readBody(req));
     json(res, 200, await receberLogoutSso(input.logoutToken));

@@ -339,6 +339,14 @@ model MailSsoRevocation {
   @@map("mail_sso_revocations")
 }
 
+/// O transmissor SSF identifica mudancas de conta pelo email do Auth.
+model MailSsoEmailRevocation {
+  email String @id
+  revokedBefore DateTime @map("revoked_before")
+
+  @@map("mail_sso_email_revocations")
+}
+
 /// Tentativas de login por janela, para travar forca bruta.
 /// Chaveado por endereco E por IP: bloquear so por conta deixa o atacante
 /// varrer varias caixas; bloquear so por IP pune escritorio com IP compartilhado.

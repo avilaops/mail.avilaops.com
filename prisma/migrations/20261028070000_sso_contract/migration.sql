@@ -11,3 +11,8 @@ CREATE TABLE "mail_sso_revocations" (
   "subject" TEXT NOT NULL PRIMARY KEY,
   "revoked_before" TIMESTAMP(3) NOT NULL
 );
+
+CREATE TABLE "mail_sso_email_revocations" (
+  "email" TEXT NOT NULL PRIMARY KEY,
+  "revoked_before" TIMESTAMP(3) NOT NULL
+);

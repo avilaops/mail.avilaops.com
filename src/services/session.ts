@@ -131,7 +131,7 @@ async function emitirSessao(
   };
   const sessao = contexto.sso
     ? await prisma.$transaction(async (tx) => {
-        await conferirRevogacaoSso(tx, contexto.sso!.subject, contexto.sso!.issuedAt);
+        await conferirRevogacaoSso(tx, contexto.sso!.subject, contexto.sso!.issuedAt, contexto.sso!.email);
         return tx.mailSession.create({ data: dados, select: { id: true } });
       })
     : await prisma.mailSession.create({ data: dados, select: { id: true } });
@@ -459,11 +459,11 @@ export async function refresh(input: {
 
   const resultado = await prisma.$transaction(async (tx) => {
     // Mesma ordem de locks para rotacao, replay e revogacao de aparelhos.
-    const referencia = await tx.mailSession.findUnique({ where: { refreshHash: hash }, select: { mailboxId: true, ssoSubject: true, ssoIssuedAt: true } });
+    const referencia = await tx.mailSession.findUnique({ where: { refreshHash: hash }, select: { mailboxId: true, ssoSubject: true, ssoIssuedAt: true, ssoEmail: true } });
     if (!referencia) return { erro: "Sessao invalida. Faca login novamente.", status: 401 };
     if (referencia.ssoSubject) {
-      if (!referencia.ssoIssuedAt) return { erro: "Sessao invalida. Faca login novamente.", status: 401 };
-      await conferirRevogacaoSso(tx, referencia.ssoSubject, referencia.ssoIssuedAt);
+      if (!referencia.ssoIssuedAt || !referencia.ssoEmail) return { erro: "Sessao invalida. Faca login novamente.", status: 401 };
+      await conferirRevogacaoSso(tx, referencia.ssoSubject, referencia.ssoIssuedAt, referencia.ssoEmail);
     }
     await tx.$queryRaw`SELECT id FROM mail_mailboxes WHERE id = ${referencia.mailboxId} FOR UPDATE`;
     const sessao = await tx.mailSession.findUnique({
@@ -734,7 +734,7 @@ export async function loginSso(input: {
   userAgent?: string;
 }): Promise<SsoLoginResult> {
   const identidade = identidadeSso(input.ssoToken);
-  await prisma.$transaction((tx) => conferirRevogacaoSso(tx, identidade.subject, identidade.issuedAt));
+  await prisma.$transaction((tx) => conferirRevogacaoSso(tx, identidade.subject, identidade.issuedAt, identidade.email));
   await conferirPoliticaSso(input.ssoToken);
   const email = identidade.email;
 
