@@ -234,6 +234,14 @@ check("token adulterado e rejeitado", verifyAccessToken(`${sessao.accessToken}x`
 console.log("\n[5] Rotacao e reuso de refresh token");
 const renovada = await refresh({ refreshToken: sessao.refreshToken, ip: "203.0.113.9" });
 check("refresh emite par novo", renovada.accessToken !== sessao.accessToken);
+const concorrentes = await Promise.all(Array.from({ length: 5 }, () =>
+  refresh({ refreshToken: sessao.refreshToken, ip: "203.0.113.9" }).catch(() => null)));
+check("refresh concorrente reutiliza a mesma sucessora sem derrubar aparelhos",
+  concorrentes.every((item) => item?.refreshToken === renovada.refreshToken));
+const sessaoAnterior = await prisma.mailSession.findUniqueOrThrow({
+  where: { refreshHash: (await import("node:crypto")).createHash("sha256").update(sessao.refreshToken).digest("hex") },
+});
+await prisma.mailSession.update({ where: { id: sessaoAnterior.id }, data: { revokedAt: new Date(Date.now() - 11_000) } });
 await esperaErro("refresh antigo nao serve mais", () =>
   refresh({ refreshToken: sessao.refreshToken }), "invalida");
 await esperaErro("apos reuso, o refresh novo tambem cai", () =>

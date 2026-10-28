@@ -37,8 +37,30 @@ jobs:
         working-directory: webmail
         env:
           AGENDA_ENABLED: all
+  session-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: webmail/package-lock.json
+      - run: npm ci
+        working-directory: webmail
+      - run: npm install --no-save --package-lock=false playwright
+        working-directory: webmail
+      - run: npx playwright install --with-deps chromium
+        working-directory: webmail
+      - run: npm run build
+        working-directory: webmail
+      - run: node tests/sessao.mjs
+        working-directory: webmail
   api:
-    needs: verify
+    needs: [verify, session-browser]
     permissions:
       contents: read
       packages: write
@@ -49,7 +71,7 @@ jobs:
       image-suffix: '-api'
       publish: ${{ github.event_name != 'pull_request' }}
   webmail:
-    needs: verify
+    needs: [verify, session-browser]
     permissions:
       contents: read
       packages: write
