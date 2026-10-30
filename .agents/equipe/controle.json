@@ -9,7 +9,7 @@
       "id": "MAIL-DELIVERY-20261030-01",
       "title": "Corrigir entrega para endereco externo terminado em sublinhado",
       "responsible": "nicolas",
-      "status": "em-andamento",
+      "status": "concluido",
       "acceptance": [
         "Aceitar sublinhado nas extremidades do endereco externo sem alterar a politica de nomes de caixas",
         "Recusar pontos nas extremidades, pontos consecutivos e parte local acima de 64 caracteres",
@@ -17,7 +17,11 @@
       ],
       "evidence": [
         "Typecheck local aprovado; smoke: 263 verificacoes aprovadas",
-        "Fila de producao confirmou falha de validacao antes de consultar o MX externo"
+        "Fila de producao confirmou falha de validacao antes de consultar o MX externo",
+        "GitHub Actions 41090925887: verify aprovado, artefato mail-address-module compilado e publicado",
+        "Modulo nativo aplicado com SHA-256 e4a0cee3edd848e8efcbf4979df5d6e5464ae8e71165ea5f23742c19a1ece416; backup anterior preservado",
+        "Servicos API e MTA ativos; mensagem original passou de deferred para sent por entrega MX direta em 2026-10-30T16:37:06.949Z, sem nova mensagem ou convite",
+        "Aceitacao pelo servidor destinatario confirmada; leitura e pasta de destino dependem da caixa externa"
       ]
     }
   ],
