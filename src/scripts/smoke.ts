@@ -53,6 +53,15 @@ check("extrai de 'Nome <a@b>'", parseAddress("Ávila Ops <nicolas@avilaops.com>"
 check("recusa endereco sem dominio", parseAddress("semarroba") === null);
 check("recusa dominio sem TLD", parseAddress("a@localhost") === null);
 check("recusa ponto no inicio", parseAddress(".a@b.com") === null);
+check("aceita sublinhado antes da arroba", parseAddress("destinatario_@hotmail.com")?.full === "destinatario_@hotmail.com");
+check("aceita sublinhado no inicio", parseAddress("_destinatario@exemplo.com")?.localPart === "_destinatario");
+check("aceita mais e hifen nas extremidades", parseAddress("+destinatario-@exemplo.com") !== null);
+check("preserva normalizacao com sublinhado final", parseAddress("Pessoa <DESTINATARIO_@HOTMAIL.COM>")?.full === "destinatario_@hotmail.com");
+check("recusa ponto no final", parseAddress("destinatario.@exemplo.com") === null);
+check("recusa pontos consecutivos", parseAddress("destinatario..outro@exemplo.com") === null);
+check("aceita parte local com 64 caracteres", parseAddress(`${"a".repeat(63)}_@exemplo.com`) !== null);
+check("recusa parte local com 65 caracteres", parseAddress(`${"a".repeat(64)}_@exemplo.com`) === null);
+check("preserva politica de nomes de caixa provisionada", !isValidLocalPart("destinatario_"));
 check("sub-enderecamento resolve para a base", stripSubaddress("contato+nota") === "contato");
 check("recusa parte local com espaco", !isValidLocalPart("con tato"));
 

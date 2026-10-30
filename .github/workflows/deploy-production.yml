@@ -24,7 +24,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx prisma generate
+      - run: npm run build
       - run: npm test
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mail-address-module
+          path: dist/lib/address.js
+          retention-days: 7
       - run: npm ci
         working-directory: webmail
       - run: npm run test:calendar

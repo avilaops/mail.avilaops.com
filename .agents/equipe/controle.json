@@ -1,8 +1,26 @@
 {
   "schemaVersion": 1,
   "application": "avila-mail-avilaops-com",
-  "members": [],
-  "tasks": [],
+  "members": [
+    { "id": "nicolas", "name": "Nicolas", "role": "Solicitante" }
+  ],
+  "tasks": [
+    {
+      "id": "MAIL-DELIVERY-20261030-01",
+      "title": "Corrigir entrega para endereco externo terminado em sublinhado",
+      "responsible": "nicolas",
+      "status": "em-andamento",
+      "acceptance": [
+        "Aceitar sublinhado nas extremidades do endereco externo sem alterar a politica de nomes de caixas",
+        "Recusar pontos nas extremidades, pontos consecutivos e parte local acima de 64 caracteres",
+        "Publicar modulo compilado no GitHub e recuperar a mensagem existente sem criar convite duplicado"
+      ],
+      "evidence": [
+        "Typecheck local aprovado; smoke: 263 verificacoes aprovadas",
+        "Fila de producao confirmou falha de validacao antes de consultar o MX externo"
+      ]
+    }
+  ],
   "decisions": [],
   "integrations": []
 }
