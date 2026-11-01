@@ -112,7 +112,7 @@ export function EditorRico({ valorInicial, onMudar, focarNoTopo }: Props) {
     "h-7 min-w-7 rounded px-1.5 text-xs transition hover:bg-[var(--color-hover-suave)]";
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-52 flex-1 flex-col">
       <div className="flex flex-wrap items-center gap-0.5 border-b border-[var(--color-borda)] bg-[var(--color-fundo-suave)] px-2 py-1">
         {COMANDOS.map((comando) => (
           <button

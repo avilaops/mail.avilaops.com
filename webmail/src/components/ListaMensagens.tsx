@@ -80,6 +80,7 @@ interface Props {
   podeArquivar: boolean;
   /** Abre a barra de pastas no celular. */
   onAbrirPastas: () => void;
+  onEscrever: () => void;
   /** Recorte ativo da lista. */
   filtro: Filtro;
   onFiltrar: (filtro: Filtro) => void;
@@ -129,6 +130,7 @@ export function ListaMensagens({
   onLoteAdiar,
   podeArquivar,
   onAbrirPastas,
+  onEscrever,
 }: Props) {
   const emLote = selecionados.length > 0;
   const todosMarcados = mensagens.length > 0 && selecionados.length === mensagens.length;
@@ -136,14 +138,26 @@ export function ListaMensagens({
   const anexoAtivo = RECORTES_DE_ANEXO.find(([chave]) => chave === filtro)?.[1];
 
   return (
-    <section className="flex h-full w-full shrink-0 flex-col border-r border-[var(--color-borda)] md:w-[22rem] lg:w-[26rem]">
+    <section aria-label="Lista de mensagens" className="flex h-full w-full shrink-0 flex-col border-r border-[var(--color-borda)] md:w-72 xl:w-80 2xl:w-96">
       <div className="flex items-center gap-2 border-b border-[var(--color-borda)] px-3 py-2.5">
         <button
           onClick={onAbrirPastas}
           aria-label="Abrir pastas"
-          className="shrink-0 rounded-md border border-[var(--color-borda)] px-2 py-1.5 text-xs md:hidden"
+          className="shrink-0 rounded-md border border-[var(--color-borda)] px-2 py-1.5 text-xs xl:hidden"
         >
           ☰
+        </button>
+
+        <button
+          type="button"
+          onClick={onEscrever}
+          aria-label="Escrever"
+          title="Escrever nova mensagem"
+          className="shrink-0 rounded-md bg-[var(--color-forte)] px-2 py-1.5 text-xs text-[var(--color-sobre-forte)] xl:hidden"
+        >
+          <svg aria-hidden width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15v5Z" />
+          </svg>
         </button>
 
         <input
@@ -194,7 +208,7 @@ export function ListaMensagens({
           "so as nao lidas" e a pergunta que se faz varias vezes por dia, e um
           recorte ativo precisa ficar obvio para ninguem achar que perdeu
           mensagem. */}
-      <div className="flex items-center gap-1 border-b border-[var(--color-borda)] px-3 py-1.5">
+      <div className="flex flex-wrap items-center gap-1 border-b border-[var(--color-borda)] px-3 py-1.5">
         {(
           [
             ["todas", "Todas"],
