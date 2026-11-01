@@ -9,7 +9,7 @@
       "id": "MAIL-ANEXOS-20261101-01",
       "title": "Preservar leitura e encaminhar anexos da mensagem original",
       "responsible": "nicolas",
-      "status": "em-revisao",
+      "status": "concluido",
       "acceptance": [
         "Manter corpo legivel com 18 anexos em desktop e celular",
         "Encaminhar arquivos selecionados sem alterar os originais",
@@ -20,7 +20,10 @@
         "Navegador de producao confirmou iframe com 2 pixels de altura antes da correcao",
         "Typecheck API e webmail aprovados; lint sem erros e com sete avisos preexistentes",
         "Build Next local aprovado; testes reais de navegador locais aprovados para 950x900, 390x844 e 844x390, download, encaminhamento, remocao, retomada e envio durante autosave",
-        "PR #13: https://github.com/avilaops/mail.avilaops.com/pull/13; publicacao e verificacao em producao ainda pendentes",
+        "PR #13 integrado: https://github.com/avilaops/mail.avilaops.com/pull/13; commit funcional 73ccc2cec3751fc1374524f8e01e482663cd328f",
+        "CI e deploy 41332935129 aprovados: https://github.com/avilaops/mail.avilaops.com/actions/runs/41332935129; integracao com 805 verificacoes e zero falhas",
+        "Producao: API, MTA e webmail ativos; releases mail/release.0cVBTy e webmail/release.spmGIr instaladas pelo CI em 2026-11-01",
+        "Interface autenticada de producao: corpo com 410.25px recolhido e 160px expandido; 18 links de download, ultimo arquivo acessivel pela rolagem; nenhuma rolagem horizontal da pagina",
         "Rascunho aberto do usuario preservado; nenhuma mensagem real enviada"
       ]
     },
