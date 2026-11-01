@@ -393,6 +393,32 @@ export async function getAttachment(mailboxId: string, messageId: string, attach
   };
 }
 
+/** Lê o MIME uma vez para encaminhar os anexos escolhidos da própria caixa. */
+export async function getMessageAttachments(mailboxId: string, messageId: string, attachmentIds: string[]) {
+  if (attachmentIds.length === 0) return [];
+  if (attachmentIds.length > 20 || new Set(attachmentIds).size !== attachmentIds.length) {
+    throw new MessageError("Selecao de anexos invalida (maximo de 20).", 422);
+  }
+  const mensagem = await prisma.message.findFirst({
+    where: { id: messageId, mailboxId },
+    select: { storageKey: true, attachments: { select: { id: true, partIndex: true, filename: true, contentType: true } } },
+  });
+  const registros = attachmentIds.map((id) => mensagem?.attachments.find((anexo) => anexo.id === id));
+  if (!mensagem || registros.some((anexo) => !anexo)) {
+    throw new MessageError("Anexo nao encontrado nesta caixa e mensagem.", 404);
+  }
+  const parsed = await simpleParser(await readRaw(mensagem.storageKey));
+  return registros.map((anexo) => {
+    const parte = parsed.attachments[anexo!.partIndex];
+    if (!parte) throw new MessageError("Anexo indisponivel na mensagem original.", 410);
+    return {
+      filename: anexo!.filename ?? parte.filename ?? "anexo",
+      contentType: anexo!.contentType || parte.contentType || "application/octet-stream",
+      content: parte.content as Buffer,
+    };
+  });
+}
+
 /** Download da mensagem original em .eml — o cliente leva o e-mail dele embora. */
 export async function getRawMessage(mailboxId: string, messageId: string) {
   const mensagem = await prisma.message.findFirst({

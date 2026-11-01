@@ -4716,6 +4716,44 @@ check("calcula a janela de observacao", estadoValidacaoAgenda?.startedAt === ini
 check("agrega lembretes da caixa observada", estadoValidacaoAgenda?.reminders.sent === 1);
 check("informa que a janela ainda esta em andamento", estadoValidacaoAgenda?.observationComplete === false);
 
+console.log("\n[51] Encaminhamento com anexos e retomada do rascunho");
+{
+  const { simpleParser: parseMime } = await import("mailparser");
+  const { default: MailComposer } = await import("nodemailer/lib/mail-composer/index.js");
+  const caixaAnexos = await createMailbox({ domain: "brilhax.com.br", username: "anexos51", password: SENHA, mustChangePassword: false });
+  const arquivos = Array.from({ length: 18 }, (_, indice) => ({
+    filename: `documento-${indice + 1}.txt`, contentType: "text/plain",
+    content: Buffer.from(`Conteudo original ${indice + 1}\nAcentos: ação.\n`),
+  }));
+  const raw = await new MailComposer({ from: "origem@example.test", to: "anexos51@brilhax.com.br", subject: "Documentos", text: "Seguem documentos", attachments: arquivos }).compile().build();
+  const origemId = (await storeCopyInMailbox(caixaAnexos.id, raw, "inbox"))!;
+  const origem = await getMessage(caixaAnexos.id, origemId);
+  const selecao = { messageId: origemId, attachmentIds: origem.attachments.map((item) => item.id) };
+  const input = { mailboxId: caixaAnexos.id, to: ["destino@example.test"], subject: "Fwd: Documentos", text: "Encaminho os documentos", messageAttachments: selecao };
+  await esperaErro("recusa anexos de outra caixa", () => saveDraft({ ...input, mailboxId: caixaValidacaoAgenda.id }), "nao encontrado");
+  await esperaErro("recusa anexo inexistente sem salvar parcialmente", () => saveDraft({ ...input, messageAttachments: { ...selecao, attachmentIds: [...selecao.attachmentIds, "inexistente"] } }), "nao encontrado");
+  await esperaErro("recusa IDs repetidos", () => saveDraft({ ...input, messageAttachments: { ...selecao, attachmentIds: [selecao.attachmentIds[0]!, selecao.attachmentIds[0]!] } }), "invalida");
+  await esperaErro("limite inclui anexos originais e novos", () => saveDraft({ ...input, attachments: arquivos.slice(0, 3).map((item) => ({ filename: item.filename, contentBase64: item.content.toString("base64") })) }), "maximo 20");
+  const salvo = await saveDraft(input);
+  check("rascunho guarda os 18 anexos", salvo.attachments.length === 18);
+  check("encaminhar nao remove anexos da origem", (await getMessage(caixaAnexos.id, origemId)).attachments.length === 18);
+  await deleteMessages(caixaAnexos.id, [origemId], { permanent: true });
+  const retomado = await saveDraft({ ...input, draftId: salvo.draftId, messageAttachments: { messageId: salvo.draftId, attachmentIds: salvo.attachments.slice(1).map((item) => item.id) } });
+  check("retomar e remover um anexo conserva os outros 17", retomado.attachments.length === 17);
+  const antesDaFalha = await prisma.mailbox.findUniqueOrThrow({ where: { id: caixaAnexos.id }, select: { quotaBytes: true } });
+  await prisma.mailbox.update({ where: { id: caixaAnexos.id }, data: { quotaBytes: 1n } });
+  await esperaErro("falha ao salvar preserva rascunho anterior", () => saveDraft({ ...input, draftId: retomado.draftId, messageAttachments: { messageId: retomado.draftId, attachmentIds: retomado.attachments.map((item) => item.id) } }), "quota");
+  check("anexos continuam disponiveis apos falha de quota", (await getMessage(caixaAnexos.id, retomado.draftId)).attachments.length === 17);
+  await prisma.mailbox.update({ where: { id: caixaAnexos.id }, data: { quotaBytes: antesDaFalha.quotaBytes } });
+  const enviado = await sendMessage({ ...input, draftId: retomado.draftId, messageAttachments: { messageId: retomado.draftId, attachmentIds: retomado.attachments.map((item) => item.id) } });
+  const fila = await prisma.outboundMessage.findUniqueOrThrow({ where: { id: enviado.queuedId } });
+  const mime = await parseMime(await readRaw(fila.storageKey));
+  check("MIME encaminhado contem 17 arquivos", mime.attachments.length === 17);
+  check("nomes e bytes preservados sem o arquivo removido", mime.attachments.every((item, indice) => item.filename === arquivos[indice + 1]!.filename && item.content.equals(arquivos[indice + 1]!.content)));
+  check("encaminhamento nao vira resposta", !mime.inReplyTo && !mime.references);
+  check("envio limpa apenas o rascunho utilizado", (await listMessages({ mailboxId: caixaAnexos.id, folder: "drafts" })).messages.length === 0);
+}
+
 await prisma.$disconnect();
 rmSync(workDir, { recursive: true, force: true });
 

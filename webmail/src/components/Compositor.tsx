@@ -5,6 +5,7 @@ import { api } from "@/lib/cliente";
 import { CampoDestinatarios } from "@/components/CampoDestinatarios";
 import { enviarAnexo, formatarTamanho, type AnexoEnviado } from "@/lib/upload";
 import { EditorRico, htmlParaTextoSimples, textoParaHtml } from "@/components/EditorRico";
+import type { Anexo } from "@/lib/tipos";
 
 /**
  * Janela de composicao.
@@ -27,6 +28,7 @@ export interface ContextoComposicao {
   messageId?: string;
   /** Rascunho sendo retomado — some ao enviar. */
   draftId?: string;
+  mensagemComAnexos?: { id: string; anexos: Anexo[] };
   para?: string[];
   cc?: string[];
   cco?: string[];
@@ -77,6 +79,14 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
   const [corpo, setCorpo] = useState(() => textoParaHtml(contexto.corpo ?? ""));
 
   const [anexos, setAnexos] = useState<AnexoNaTela[]>([]);
+  const [anexosDaMensagem, setAnexosDaMensagem] = useState(contexto.mensagemComAnexos?.anexos ?? []);
+  // As chaves da tela ficam estáveis; os IDs do MIME mudam a cada autosave.
+  const origemAnexos = useRef({
+    messageId: contexto.mensagemComAnexos?.id ?? "",
+    ids: new Map((contexto.mensagemComAnexos?.anexos ?? []).map((anexo) => [anexo.id, anexo.id])),
+  });
+  const salvamento = useRef<Promise<void>>(Promise.resolve());
+  const envioEmCurso = useRef(false);
   const [enderecos, setEnderecos] = useState<EnderecoEnvio[]>([]);
   const [remetente, setRemetente] = useState<string | null>(null);
   const [comAssinatura, setComAssinatura] = useState(true);
@@ -100,35 +110,56 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
   }, []);
 
 
-  const salvarRascunho = useCallback(async () => {
-    // O editor deixa "<div><br></div>" num corpo vazio, então a checagem tem
-    // de olhar o texto extraído, não o HTML.
-    if (para.length === 0 && !assunto.trim() && !htmlParaTextoSimples(corpo)) return;
+  const referenciasAnexos = useCallback(() => anexosDaMensagem.length > 0 ? {
+    messageId: origemAnexos.current.messageId,
+    attachmentIds: anexosDaMensagem.map((anexo) => origemAnexos.current.ids.get(anexo.id) ?? anexo.id),
+  } : undefined, [anexosDaMensagem]);
 
-    setEstadoRascunho("salvando");
-    try {
-      const dados = await api<{ draftId: string }>("/me/drafts", {
-        method: "POST",
-        body: {
-          draftId: rascunhoId.current ?? undefined,
-          to: para,
-          cc,
-          bcc: cco,
-          subject: assunto,
-          // Sempre as duas versões: cliente antigo, leitor de tela e filtro de
-          // spam preferem o texto — mensagem só-HTML pontua pior no antispam.
-          text: htmlParaTextoSimples(corpo),
-          html: corpo,
-          inReplyToMessageId: contexto.messageId,
-        },
-      });
-      rascunhoId.current = dados.draftId;
-      setEstadoRascunho("salvo");
-    } catch {
-      // Falha de rascunho nao interrompe quem esta escrevendo.
-      setEstadoRascunho("parado");
-    }
-  }, [para, cc, cco, assunto, corpo, contexto.messageId]);
+  const salvarRascunho = useCallback(() => {
+    // Serializa autosaves para não apagar o MIME que outro salvamento lê.
+    const tarefa = salvamento.current.then(async () => {
+      if (envioEmCurso.current) return;
+      // O editor deixa "<div><br></div>" num corpo vazio, então a checagem tem
+      // de olhar o texto extraído, não o HTML.
+      if (para.length === 0 && !assunto.trim() && !htmlParaTextoSimples(corpo)) return;
+
+      setEstadoRascunho("salvando");
+      try {
+        const dados = await api<{ draftId: string; attachments: Anexo[] }>("/me/drafts", {
+          method: "POST",
+          body: {
+            draftId: rascunhoId.current ?? undefined,
+            to: para,
+            cc,
+            bcc: cco,
+            subject: assunto,
+            // Sempre as duas versões: cliente antigo, leitor de tela e filtro de
+            // spam preferem o texto — mensagem só-HTML pontua pior no antispam.
+            text: htmlParaTextoSimples(corpo),
+            html: corpo,
+            inReplyToMessageId: contexto.messageId,
+            messageAttachments: referenciasAnexos(),
+          },
+        });
+        rascunhoId.current = dados.draftId;
+        if (anexosDaMensagem.length > 0) {
+          if (dados.attachments?.length !== anexosDaMensagem.length) {
+            throw new Error("Não foi possível confirmar os anexos do rascunho.");
+          }
+          origemAnexos.current = {
+            messageId: dados.draftId,
+            ids: new Map(anexosDaMensagem.map((anexo, indice) => [anexo.id, dados.attachments[indice]!.id])),
+          };
+        }
+        setEstadoRascunho("salvo");
+      } catch {
+        // Falha de rascunho nao interrompe quem esta escrevendo.
+        setEstadoRascunho("parado");
+      }
+    });
+    salvamento.current = tarefa;
+    return tarefa;
+  }, [para, cc, cco, assunto, corpo, contexto.messageId, referenciasAnexos, anexosDaMensagem]);
 
   useEffect(() => {
     if (temporizador.current) clearTimeout(temporizador.current);
@@ -185,6 +216,7 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
   }
 
   async function enviar() {
+    if (envioEmCurso.current) return;
     setErro(null);
 
     if (para.length === 0) {
@@ -192,16 +224,22 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
       return;
     }
 
-    const subindo = anexos.filter((item) => !item.enviado && !item.erro);
+    if (anexos.some((item) => item.erro)) {
+      setErro("Remova ou envie novamente os anexos com falha antes de enviar.");
+      return;
+    }
+    const subindo = anexos.filter((item) => !item.enviado);
     if (subindo.length > 0) {
       setErro("Aguarde os anexos terminarem de subir.");
       return;
     }
 
+    envioEmCurso.current = true;
     setEnviando(true);
     if (temporizador.current) clearTimeout(temporizador.current);
 
     try {
+      await salvamento.current;
       const enviado = await api<{ queuedId: string; rfcMessageId: string; desfazerAteMs: number }>("/me/messages/send", {
         method: "POST",
         body: {
@@ -216,6 +254,7 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
           fromAddress: remetente ?? undefined,
           appendSignature: comAssinatura,
           attachmentIds: anexos.filter((item) => item.enviado).map((item) => item.enviado!.id),
+          messageAttachments: referenciasAnexos(),
           inReplyToMessageId: contexto.messageId,
           draftId: rascunhoId.current ?? undefined,
         },
@@ -225,10 +264,19 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
     } catch (falha) {
       setErro(falha instanceof Error ? falha.message : "Falha ao enviar.");
       setEnviando(false);
+      envioEmCurso.current = false;
     }
   }
 
-  const prontosParaEnviar = anexos.every((item) => item.enviado || item.erro);
+  const prontosParaEnviar = anexos.every((item) => item.enviado && !item.erro);
+  const anexosVisiveis = [
+    ...anexosDaMensagem.map((anexo) => ({
+      chave: anexo.id, nome: anexo.filename ?? "anexo", tamanho: anexo.sizeBytes,
+      progresso: 100, pronto: true, erro: null,
+      remover: () => setAnexosDaMensagem((atual) => atual.filter((item) => item.id !== anexo.id)),
+    })),
+    ...anexos.map((anexo) => ({ ...anexo, pronto: Boolean(anexo.enviado), remover: () => removerAnexo(anexo.chave) })),
+  ];
 
   return (
     <section
@@ -316,42 +364,46 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
         focarNoTopo={contexto.tipo === "resposta" || contexto.tipo === "encaminhamento"}
       />
 
-      {anexos.length > 0 && (
-        <ul className="max-h-32 overflow-y-auto border-t border-[var(--color-borda)] px-4 py-2">
-          {anexos.map((anexo) => (
-            <li key={anexo.chave} className="flex items-center gap-2 py-1">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-baseline gap-2">
-                  <span className="truncate text-xs font-medium">{anexo.nome}</span>
-                  <span className="shrink-0 text-[11px] text-[var(--color-texto-fraco)]">
-                    {formatarTamanho(anexo.tamanho)}
-                  </span>
+      {anexosVisiveis.length > 0 && (
+        <section aria-label="Anexos para enviar" className="shrink-0 border-t border-[var(--color-borda)]">
+          <p className="px-4 pt-2 text-xs font-medium">{anexosVisiveis.length} anexo{anexosVisiveis.length > 1 ? "s" : ""}</p>
+          <ul className="rolagem-fina max-h-32 overflow-y-auto overscroll-contain px-4 py-2">
+            {anexosVisiveis.map((anexo) => (
+              <li key={anexo.chave} className="flex items-center gap-2 py-1">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-baseline gap-2">
+                    <span title={anexo.nome} className="truncate text-xs font-medium">{anexo.nome}</span>
+                    <span className="shrink-0 text-[11px] text-[var(--color-texto-fraco)]">
+                      {formatarTamanho(anexo.tamanho)}
+                    </span>
+                  </div>
+
+                  {anexo.erro ? (
+                    <p className="text-[11px] text-[var(--color-perigo)]">{anexo.erro}</p>
+                  ) : (
+                    !anexo.pronto && (
+                      <div className="mt-1 h-0.5 overflow-hidden rounded-full bg-[var(--color-borda)]">
+                        <div
+                          className="h-full bg-[var(--color-realce)] transition-[width]"
+                          style={{ width: `${anexo.progresso}%` }}
+                        />
+                      </div>
+                    )
+                  )}
                 </div>
 
-                {anexo.erro ? (
-                  <p className="text-[11px] text-[var(--color-perigo)]">{anexo.erro}</p>
-                ) : (
-                  !anexo.enviado && (
-                    <div className="mt-1 h-0.5 overflow-hidden rounded-full bg-[var(--color-borda)]">
-                      <div
-                        className="h-full bg-[var(--color-realce)] transition-[width]"
-                        style={{ width: `${anexo.progresso}%` }}
-                      />
-                    </div>
-                  )
-                )}
-              </div>
-
-              <button
-                onClick={() => removerAnexo(anexo.chave)}
-                aria-label={`Remover ${anexo.nome}`}
-                className="shrink-0 rounded px-1.5 text-xs text-[var(--color-texto-fraco)] transition hover:text-[var(--color-perigo)]"
-              >
-                ×
-              </button>
-            </li>
-          ))}
-        </ul>
+                <button
+                  onClick={anexo.remover}
+                  disabled={enviando}
+                  aria-label={`Remover ${anexo.nome}`}
+                  className="shrink-0 rounded px-1.5 text-xs text-[var(--color-texto-fraco)] transition hover:text-[var(--color-perigo)]"
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
       {erro && (

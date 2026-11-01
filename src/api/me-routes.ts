@@ -211,6 +211,10 @@ const composeSchema = z.object({
     .max(20)
     .optional(),
   attachmentIds: z.array(z.string().min(1)).max(20).optional(),
+  messageAttachments: z.object({
+    messageId: z.string().min(1),
+    attachmentIds: z.array(z.string().min(1)).max(20),
+  }).optional(),
   fromAddress: z.string().max(200).optional(),
   appendSignature: z.boolean().optional(),
 });
