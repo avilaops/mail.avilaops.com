@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { createServer } from "node:http";
+import { Agent, createServer, request } from "node:http";
 import { setTimeout as esperar } from "node:timers/promises";
 
 // SIGTERM real precisa de POSIX: no Windows child.kill termina o processo
@@ -63,6 +63,9 @@ for (const sinal of ["SIGTERM", "SIGINT"]) {
   next.stderr.on("data", (parte) => { logs += parte; });
   const saiu = once(next, "exit");
   const clientes = [];
+  const proxy = new Agent({ keepAlive: true, maxSockets: 1 });
+  let consultando = true;
+  let consultas;
   try {
     for (let tentativa = 0; ; tentativa++) {
       try { if ((await fetch(`${base}/entrar?local=1`, { signal: AbortSignal.timeout(2000) })).ok) break; } catch { /* inicializando */ }
@@ -95,6 +98,30 @@ for (const sinal of ["SIGTERM", "SIGINT"]) {
 
     const abertos = [await abrir(), await abrir()];
     assert.equal(fluxos.size, 2, "duas conexoes SSE continuam ativas antes do sinal");
+    // Como o Caddy, tenta reutilizar o socket do SSE para requests curtos
+    // depois do EOF. A parada nao pode depender de o proxy ficar ocioso.
+    const fluxoProxy = await new Promise((resolve, reject) => {
+      const pedido = request(`${base}/api/mail/me/events`, { agent: proxy, headers: { cookie } }, resolve);
+      pedido.once("error", reject);
+      pedido.end();
+    });
+    fluxoProxy.on("error", () => {});
+    fluxoProxy.resume();
+    consultas = (async () => {
+      while (consultando) {
+        await new Promise((resolve) => {
+          const pedido = request(`${base}/api/mail/me`, { agent: proxy, headers: { cookie } }, (resposta) => {
+            resposta.resume();
+            resposta.once("end", resolve);
+            resposta.once("error", resolve);
+          });
+          pedido.once("error", resolve);
+          pedido.setTimeout(1000, () => pedido.destroy());
+          pedido.end();
+        });
+        await esperar(20);
+      }
+    })();
     const terminouFluxos = Promise.allSettled(abertos.map(async ({ leitor }) => {
       while (!(await leitor.read()).done) { /* aguarda EOF limpo */ }
     }));
@@ -118,6 +145,9 @@ for (const sinal of ["SIGTERM", "SIGINT"]) {
     assert.doesNotMatch(logs, /failed to pipe response|uncaught|unhandled/i);
     console.log(`PASSOU — ${sinal}: SSE fechado, rascunho concluido e processo encerrado em ${Math.round(performance.now() - inicio)}ms`);
   } finally {
+    consultando = false;
+    proxy.destroy();
+    await consultas;
     clientes.forEach((cliente) => cliente.abort());
     if (next.exitCode === null && next.signalCode === null) next.kill("SIGKILL");
     await saiu;

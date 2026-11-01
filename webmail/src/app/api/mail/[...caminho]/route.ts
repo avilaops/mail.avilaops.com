@@ -96,7 +96,10 @@ async function encaminhar(request: NextRequest, caminho: string[]): Promise<Next
       headers: {
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-store",
-        Connection: "keep-alive",
+        // O fluxo permanece aberto ate o EOF; depois dele o proxy deve abrir
+        // outro socket. Reutilizar este socket durante a drenagem do Next
+        // pode manter o processo vivo com novas requisicoes indefinidamente.
+        Connection: "close",
         "X-Accel-Buffering": "no",
       },
     });

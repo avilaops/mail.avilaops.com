@@ -18,7 +18,9 @@
       ],
       "evidence": [
         "Journal de producao confirmou timeout de 90s e SIGKILL no deploy anterior; Next aguarda server.close enquanto SSE da API permanece aberto por ate cinco minutos",
-        "Reproducao em Linux/WSL com standalone anterior: rascunho concluiu, mas dois fluxos SSE ativos impediram encerramento e teste precisou enviar SIGKILL apos 5s"
+        "Reproducao em Linux/WSL com standalone anterior: rascunho concluiu, mas dois fluxos SSE ativos impediram encerramento e teste precisou enviar SIGKILL apos 5s",
+        "PR #15 fechou SSE e passou no CI, mas verificacao em producao encontrou conexao persistente reaproveitada pelo Caddy mantendo a drenagem aberta",
+        "Teste ampliado reproduziu a segunda causa: mesmo apos cancelar SSE, requests curtos reutilizando o socket exigiram SIGKILL; resposta SSE agora solicita Connection close ao terminar"
       ]
     },
     {
