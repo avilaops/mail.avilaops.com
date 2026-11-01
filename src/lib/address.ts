@@ -13,8 +13,10 @@ export interface ParsedAddress {
   full: string;
 }
 
-/** RFC 5322 simplificado — restritivo de proposito, e o que aceitamos criar. */
+/** Politica de nomes das caixas que provisionamos, distinta de destinatarios externos. */
 const LOCAL_PART_RE = /^[a-z0-9](?:[a-z0-9._+-]{0,62}[a-z0-9])?$/;
+// Nos enderecos externos, _, + e - tambem podem iniciar ou terminar a parte local.
+const ADDRESS_LOCAL_PART_RE = /^[a-z0-9_+-](?:[a-z0-9._+-]{0,62}[a-z0-9_+-])?$/;
 const DOMAIN_RE = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/;
 
 export function parseAddress(input: string): ParsedAddress | null {
@@ -29,7 +31,7 @@ export function parseAddress(input: string): ParsedAddress | null {
   const localPart = bare.slice(0, at);
   const domain = bare.slice(at + 1);
 
-  if (!LOCAL_PART_RE.test(localPart) || !DOMAIN_RE.test(domain)) return null;
+  if (!ADDRESS_LOCAL_PART_RE.test(localPart) || localPart.includes("..") || !DOMAIN_RE.test(domain)) return null;
 
   return { localPart, domain, full: `${localPart}@${domain}` };
 }
