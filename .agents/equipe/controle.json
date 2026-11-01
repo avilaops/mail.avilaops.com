@@ -9,7 +9,7 @@
       "id": "MAIL-LEITURA-20261101-02",
       "title": "Melhorar largura de leitura e ampliar a composicao",
       "responsible": "nicolas",
-      "status": "em-revisao",
+      "status": "concluido",
       "acceptance": [
         "Reservar largura util para o corpo em janelas medias sem perder acesso as pastas",
         "Ampliar e restaurar leitura e composicao sem perder conteudo e anexos",
@@ -19,7 +19,13 @@
       "evidence": [
         "Antes da melhoria, navegador de producao com 925px: leitor de 333px e corpo de 301px",
         "Typecheck e build locais aprovados; lint sem erros, sete avisos preexistentes",
-        "Suite de navegador local aprovada em 390x844, 768x900, 844x390, 950x900, 1280x900 e 1440x900: colunas, pastas, ampliacao, Esc, busca, composicao, anexos e envio durante autosave"
+        "Suite de navegador local aprovada em 390x844, 768x900, 844x390, 950x900, 1280x900 e 1440x900: colunas, pastas, ampliacao, Esc, busca, composicao, anexos e envio durante autosave",
+        "PR #14 integrado: https://github.com/avilaops/mail.avilaops.com/pull/14; commit funcional 90783f5236f7a35c794c7f832d817106874d38a3",
+        "CI e deploy aprovados: https://github.com/avilaops/mail.avilaops.com/actions/runs/41335161446",
+        "Interface autenticada publicada em janela de 925px: corpo de 605px, leitura ampliada de 893px; composicao de 672px e ampliada de 893px; 18 anexos preservados",
+        "Composicao vazia aberta e fechada sem enviar mensagem; rascunho preexistente preservado",
+        "Disponibilidade confirmada em 2026-11-01 15:20 -03:00: API, MTA e webmail ativos; acesso publico HTTP 200; IMAP 993 e SMTP 465/587 respondendo; SMTP 25 respondeu 250 OK via outro servidor",
+        "Pendencia operacional observada no deploy: encerramento do webmail excedeu prazo de cerca de 90 segundos e systemd forcou parada antes do reinicio as 15:17:20 -03:00; servico recuperado, encerramento gracioso ainda precisa de correcao"
       ]
     },
     {
