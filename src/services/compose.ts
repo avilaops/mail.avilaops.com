@@ -6,7 +6,7 @@ import { createLogger } from "../lib/logger.js";
 import { parseAddress } from "../lib/address.js";
 import { enqueueOutbound } from "../mta/queue.js";
 import { storeCopyInMailbox } from "../mta/deliver-local.js";
-import { deleteMessages } from "./messages.js";
+import { deleteMessages, getMessageAttachments } from "./messages.js";
 import { consumeSendQuota, remainingQuota } from "./sendQuota.js";
 import { canSendAs } from "./contacts.js";
 import { consumeUploads } from "./uploads.js";
@@ -54,6 +54,8 @@ export interface ComposeInput {
   attachments?: Attachment[];
   /** Anexos ja enviados antes, via POST /v1/me/attachments. */
   attachmentIds?: string[];
+  /** Anexos de uma mensagem da caixa autenticada, copiados sem alterar a origem. */
+  messageAttachments?: { messageId: string; attachmentIds: string[] };
   /** Endereco de envio, quando a caixa tem alias. Padrao: o proprio. */
   fromAddress?: string;
   /** Cola a assinatura configurada no fim do corpo. */
@@ -177,6 +179,11 @@ async function montarMime(
   const dominio = parseAddress(remetente.address)?.domain ?? config.hostname;
   const rfcMessageId = `<${randomUUID()}@${dominio}>`;
 
+  const quantidadeAnexos = (input.attachments?.length ?? 0) + (input.attachmentIds?.length ?? 0) + (input.messageAttachments?.attachmentIds.length ?? 0);
+  if (quantidadeAnexos > 20) throw new ComposeError("No maximo 20 anexos por mensagem.", 422);
+  const anexosDaMensagem = input.messageAttachments
+    ? await getMessageAttachments(remetente.id, input.messageAttachments.messageId, input.messageAttachments.attachmentIds)
+    : [];
   const anexosInline = (input.attachments ?? []).map((anexo) => ({
     filename: anexo.filename,
     content: Buffer.from(anexo.contentBase64, "base64"),
@@ -186,7 +193,7 @@ async function montarMime(
   // Anexos enviados antes sao consumidos aqui — some da lista de pendentes e
   // vira parte da mensagem, sem ocupar disco duas vezes.
   const anexosEnviados = await consumeUploads(remetente.id, input.attachmentIds ?? []);
-  const anexos = [...anexosInline, ...anexosEnviados];
+  const anexos = [...anexosInline, ...anexosEnviados, ...anexosDaMensagem];
 
   let { text, html } = input;
 
@@ -331,7 +338,7 @@ export async function sendMessage(input: ComposeInput): Promise<SendResult> {
  * Ocupa quota de proposito: rascunho com anexo de 20 MB ocupa 20 MB de disco,
  * e esconder isso do cliente so adia a surpresa.
  */
-export async function saveDraft(input: ComposeInput): Promise<{ draftId: string }> {
+export async function saveDraft(input: ComposeInput) {
   const remetente = await carregarRemetente(input.mailboxId, input.fromAddress);
 
   const to = normalizarDestinatarios(input.to, "Para");
@@ -344,10 +351,8 @@ export async function saveDraft(input: ComposeInput): Promise<{ draftId: string 
 
   const { raw } = await montarMime(remetente, input, { to, cc, bcc }, resposta);
 
-  // Rascunho anterior sai antes do novo entrar: sem isso, cada autosave
-  // deixaria uma copia acumulando na pasta e na quota.
-  if (input.draftId) {
-    await deleteMessages(remetente.id, [input.draftId], { permanent: true }).catch(() => undefined);
+  if (raw.byteLength > config.limits.maxMessageBytes) {
+    throw new ComposeError("Rascunho maior que o limite de tamanho da mensagem.", 413);
   }
 
   const draftId = await storeCopyInMailbox(remetente.id, raw, "drafts");
@@ -355,7 +360,17 @@ export async function saveDraft(input: ComposeInput): Promise<{ draftId: string 
 
   await prisma.message.update({ where: { id: draftId }, data: { draft: true, seen: true } });
 
-  return { draftId };
+  const attachments = await prisma.attachment.findMany({
+    where: { messageId: draftId },
+    orderBy: { partIndex: "asc" },
+    select: { id: true, filename: true, contentType: true, sizeBytes: true, contentId: true },
+  });
+  // Só descarta a versão anterior depois de guardar a nova com seus anexos.
+  if (input.draftId) {
+    const anterior = await prisma.message.findFirst({ where: { id: input.draftId, mailboxId: remetente.id, draft: true }, select: { id: true } });
+    if (anterior) await deleteMessages(remetente.id, [anterior.id], { permanent: true }).catch(() => undefined);
+  }
+  return { draftId, attachments };
 }
 
 

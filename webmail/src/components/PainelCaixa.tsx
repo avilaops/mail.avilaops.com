@@ -297,6 +297,7 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
           setComposicao({
             tipo: "rascunho",
             draftId: mensagem.id,
+            mensagemComAnexos: { id: mensagem.id, anexos: mensagem.attachments },
             para: mensagem.toAddresses.map((item) => item.address),
             cc: mensagem.ccAddresses.map((item) => item.address),
             assunto: mensagem.subject ?? "",
@@ -544,6 +545,7 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
     const base = mensagem.subject ?? "(sem assunto)";
     setComposicao({
       tipo: "encaminhamento",
+      mensagemComAnexos: { id: mensagem.id, anexos: mensagem.attachments },
       // Sem `messageId`: encaminhar não é responder, e amarrar In-Reply-To
       // colocaria a mensagem na conversa errada do destinatário.
       assunto: PREFIXO_ENCAMINHAMENTO.test(base) ? base : `Fwd: ${base}`,
@@ -865,7 +867,7 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
           // A chave remonta o compositor ao trocar de contexto: sem isso,
           // clicar em "Encaminhar" com uma resposta aberta manteria os campos
           // da resposta, porque o estado inicial só é lido na montagem.
-          key={`${composicao.tipo}-${composicao.messageId ?? composicao.draftId ?? "novo"}`}
+          key={`${composicao.tipo}-${composicao.messageId ?? composicao.draftId ?? composicao.mensagemComAnexos?.id ?? "novo"}`}
           contexto={composicao}
           onFechar={() => setComposicao(null)}
           onEnviado={(enviado) => {

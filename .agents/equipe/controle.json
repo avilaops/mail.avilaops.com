@@ -6,6 +6,23 @@
   ],
   "tasks": [
     {
+      "id": "MAIL-ANEXOS-20261101-01",
+      "title": "Preservar leitura e encaminhar anexos da mensagem original",
+      "responsible": "nicolas",
+      "status": "em-andamento",
+      "acceptance": [
+        "Manter corpo legivel com 18 anexos em desktop e celular",
+        "Encaminhar arquivos selecionados sem alterar os originais",
+        "Conservar anexos no rascunho e validar isolamento entre caixas",
+        "Validar CI e interface publicada sem enviar mensagem real"
+      ],
+      "evidence": [
+        "Navegador de producao confirmou iframe com 2 pixels de altura antes da correcao",
+        "Typecheck API e webmail aprovados; lint sem erros e com sete avisos preexistentes",
+        "Rascunho aberto do usuario preservado; nenhuma mensagem real enviada"
+      ]
+    },
+    {
       "id": "MAIL-DELIVERY-20261030-01",
       "title": "Corrigir entrega para endereco externo terminado em sublinhado",
       "responsible": "nicolas",

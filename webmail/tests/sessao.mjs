@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright";
 import { build } from "esbuild";
+import { responderAnexos, testarAnexos } from "./anexos.mjs";
 
 // Somente GitHub CI: navegador e Next reais; a API controlada permite vencer
 // o acesso sem aguardar quinze minutos ou usar credenciais de produção.
@@ -54,6 +55,7 @@ const backend = createServer(async (req, res) => {
   }
   const acesso = req.headers.authorization?.replace(/^Bearer /, "");
   if ((acessos.get(acesso) ?? 0) <= Date.now()) return responder(401, { error: { message: "Acesso expirado" } });
+  if (await responderAnexos(req, res, input, responder)) return;
   if (req.url === "/v1/me/first-password" && req.method === "POST") {
     primeiraSenha = false;
     return responder(200, { ok: true });
@@ -91,6 +93,7 @@ const backend = createServer(async (req, res) => {
   if (req.url === "/v1/me/folders") return responder(200, { folders: [
     { id: "pasta-entrada-ci", name: "Entrada", kind: "inbox", total: 0, unread: 0 },
     { id: "pasta-arquivo-ci", name: "Arquivo", kind: "archive", total: 0, unread: 0 },
+    { id: "pasta-rascunhos-ci", name: "Rascunhos", kind: "drafts", total: 0, unread: 0 },
   ] });
   if (req.url?.startsWith("/v1/me/messages/aviso-ci?")) return responder(200, {
     id: "aviso-ci", folderId: "pasta-arquivo-ci", threadKey: null, fromAddress: "remetente@exemplo.test", fromName: "Remetente CI", toAddresses: [], ccAddresses: [],
@@ -419,6 +422,9 @@ try {
   assert.equal(new URL(novoLogin.headers().location).origin, "https://auth.exemplo.test");
   assert.equal(new URL(novoLogin.headers().location).pathname, "/login");
   assert.ok(Date.now() - inicioNovoLogin >= 1000);
+  await pagina.goto(`${base}/entrar?local=1`);
+  await login();
+  await testarAnexos(pagina, base);
   console.log("PASSOU — sessao real no navegador: reabertura, renovacao, JSON/download/SSE, recuperacao e cookies");
 } finally {
   await browser?.close();

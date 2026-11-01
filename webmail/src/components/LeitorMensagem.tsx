@@ -319,8 +319,8 @@ export function LeitorMensagem({
   ];
 
   return (
-    <article className="flex h-full flex-col">
-      <header className="border-b border-[var(--color-borda)] px-4 py-4 md:px-5">
+    <article className="rolagem-fina flex h-full min-h-0 min-w-0 flex-col overflow-y-auto">
+      <header className="shrink-0 border-b border-[var(--color-borda)] px-4 py-4 md:px-5">
         <div className="mb-3 flex items-start gap-3">
           <button
             onClick={onVoltar}
@@ -584,7 +584,7 @@ export function LeitorMensagem({
 
       {/* O corpo vai num cartao com margem: colado nas bordas, o branco do
           e-mail virava um bloco solto no meio da interface escura. */}
-      <div className="min-h-0 flex-1 bg-[var(--color-fundo-suave)] p-2 md:p-4">
+      <div className="min-h-48 flex-1 bg-[var(--color-fundo-suave)] p-2 md:p-4">
       <iframe
         // A chave forca o iframe a remontar ao trocar de mensagem: sem isso o
         // navegador reaproveita o documento anterior em alguns casos.
@@ -595,28 +595,44 @@ export function LeitorMensagem({
         // O corpo do e-mail é HTML de terceiro, escrito para fundo branco:
         // manter `bg-white` aqui é o que impede texto preto sobre preto quando
         // a interface está no tema escuro.
-        className="h-full w-full rounded-lg border border-[var(--color-borda)] bg-white"
+        className="block h-full w-full rounded-lg border border-[var(--color-borda)] bg-white"
       />
       </div>
 
       {mensagem.attachments.length > 0 && (
-        <footer className="border-t border-[var(--color-borda)] px-4 py-3 md:px-6">
-          <p className="mb-2 text-xs font-medium text-[var(--color-texto-fraco)]">
-            {mensagem.attachments.length} anexo{mensagem.attachments.length > 1 ? "s" : ""}
-          </p>
-          <ul className="flex flex-wrap gap-2">
-            {mensagem.attachments.map((anexo) => (
-              <li key={anexo.id}>
-                <a
-                  href={`/api/mail/me/messages/${mensagem.id}/attachments/${anexo.id}`}
-                  className="flex items-center gap-2 rounded-lg border border-[var(--color-borda)] px-3 py-2 text-xs transition hover:bg-[var(--color-fundo-suave)]"
-                >
-                  <span className="font-medium">{anexo.filename ?? "anexo"}</span>
-                  <span className="text-[var(--color-texto-fraco)]">{formatarTamanho(anexo.sizeBytes)}</span>
-                </a>
-              </li>
-            ))}
-          </ul>
+        <footer className="shrink-0 border-t border-[var(--color-borda)]">
+          {/* A chave recolhe a lista ao trocar de mensagem. Mesmo aberta, ela
+              tem altura limitada para preservar o espaço de leitura. */}
+          <details key={mensagem.id} className="group">
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm transition hover:bg-[var(--color-fundo-suave)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--color-realce)] md:px-6 [&::-webkit-details-marker]:hidden">
+              <Icone><path d="M21 11.5l-8.5 8.5a6 6 0 0 1-8.5-8.5l9-9a4 4 0 0 1 5.7 5.7l-9 9a2 2 0 0 1-2.8-2.8l8.5-8.5" /></Icone>
+              <span className="font-medium">
+                {mensagem.attachments.length} anexo{mensagem.attachments.length > 1 ? "s" : ""}
+              </span>
+              <span className="ml-auto text-xs text-[var(--color-realce)] group-open:hidden">Ver anexos</span>
+              <span className="ml-auto hidden text-xs text-[var(--color-realce)] group-open:inline">Recolher</span>
+              <span className="shrink-0 transition-transform group-open:rotate-180" aria-hidden>
+                <Icone><path d="m6 9 6 6 6-6" /></Icone>
+              </span>
+            </summary>
+            <ul aria-label="Anexos da mensagem" className="rolagem-fina grid max-h-[min(28dvh,16rem)] grid-cols-[repeat(auto-fit,minmax(min(100%,16rem),1fr))] gap-2 overflow-y-auto overscroll-contain border-t border-[var(--color-borda)] px-4 py-3 md:px-6">
+              {mensagem.attachments.map((anexo) => (
+                <li key={anexo.id} className="min-w-0">
+                  <a
+                    href={`/api/mail/me/messages/${mensagem.id}/attachments/${anexo.id}`}
+                    download={anexo.filename ?? "anexo"}
+                    className="flex h-full items-center gap-3 rounded-lg border border-[var(--color-borda)] px-3 py-2 text-xs transition hover:bg-[var(--color-fundo-suave)] focus-visible:outline-2 focus-visible:outline-[var(--color-realce)]"
+                  >
+                    <span className="min-w-0 flex-1 [overflow-wrap:anywhere] font-medium">{anexo.filename ?? "anexo"}</span>
+                    <span className="shrink-0 whitespace-nowrap text-[var(--color-texto-fraco)]">{formatarTamanho(anexo.sizeBytes)}</span>
+                    <span className="shrink-0 text-[var(--color-texto-fraco)]" aria-hidden>
+                      <Icone><path d="M12 3v12m-5-5 5 5 5-5M5 17v4h14v-4" /></Icone>
+                    </span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </details>
         </footer>
       )}
     </article>
