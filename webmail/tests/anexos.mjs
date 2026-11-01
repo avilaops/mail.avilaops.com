@@ -18,6 +18,10 @@ export const estadoAnexos = { salvos: [], enviados: [], atraso: 0 };
 
 export async function responderAnexos(req, res, input, responder) {
   const path = new URL(req.url, "http://localhost").pathname;
+  if (req.method === "GET" && path === "/v1/me/send-as") {
+    responder(200, { addresses: [{ address: "teste@exemplo.test", name: "Teste", primary: true }] });
+    return true;
+  }
   const detalhe = path.match(/^\/v1\/me\/messages\/([^/]+)$/);
   if (req.method === "GET" && detalhe && mensagens.has(detalhe[1])) {
     responder(200, mensagens.get(detalhe[1]));
