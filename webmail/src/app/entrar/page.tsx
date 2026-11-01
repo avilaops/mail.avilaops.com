@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { FormularioEntrar } from "@/components/FormularioEntrar";
 import { ssoAtivo, urlLoginSso } from "@/lib/sso";
+import { destinoMail } from "@/lib/destinoMail";
 
 /**
  * Renderizacao dinamica e obrigatoria, nao preferencia.
@@ -25,12 +26,13 @@ const AVISOS: Record<string, string> = {
 export default async function Entrar({
   searchParams,
 }: {
-  searchParams: Promise<{ local?: string; erro?: string; detalhe?: string }>;
+  searchParams: Promise<{ local?: string; erro?: string; detalhe?: string; returnTo?: string }>;
 }) {
-  const { local, erro, detalhe } = await searchParams;
+  const { local, erro, detalhe, returnTo } = await searchParams;
+  const destino = destinoMail(returnTo);
 
-  if (ssoAtivo() && local !== "1" && !erro) redirect(urlLoginSso());
+  if (ssoAtivo() && local !== "1" && !erro) redirect(urlLoginSso(destino));
 
   const aviso = erro ? (detalhe || AVISOS[erro] || AVISOS.sso_invalido) : null;
-  return <FormularioEntrar aviso={aviso} />;
+  return <FormularioEntrar aviso={aviso} destino={destino} />;
 }

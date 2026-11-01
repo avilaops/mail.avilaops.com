@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { limparSessao } from "@/lib/sessao";
-import { ssoAtivo, urlLogoutSso } from "@/lib/sso";
+import { temSessao } from "@/lib/sessao";
+import { ssoAtivo, urlLogoutSso, webmailBase } from "@/lib/sso";
 
 /**
  * Sair de verdade.
@@ -15,17 +15,17 @@ import { ssoAtivo, urlLogoutSso } from "@/lib/sso";
  * rota devolve um formulario que se envia sozinho: o navegador faz o POST com
  * o cookie e segue o redirect do auth.
  *
- * Sem SSO, o caminho antigo continua valendo: sessao apagada e volta para a
- * tela de entrar.
+ * A familia Mail e encerrada antes, pelo DELETE protegido por CSRF. Este GET
+ * somente conclui o fluxo; nunca apaga prova de uma familia ainda ativa.
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  await limparSessao();
+  if (await temSessao()) return NextResponse.redirect(`${webmailBase()}/caixa`);
 
   if (!ssoAtivo()) {
-    return NextResponse.redirect(new URL("/entrar?local=1", process.env.WEBMAIL_URL ?? "https://mail.avilaops.com"));
+    return NextResponse.redirect(new URL("/entrar?local=1", webmailBase()));
   }
 
   const destino = urlLogoutSso();

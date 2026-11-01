@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { CampoSenha } from "./CampoSenha";
 import { Marca } from "./Marca";
+import { destinoMail } from "@/lib/destinoMail";
 
 /**
  * Tela de entrada.
@@ -11,7 +12,7 @@ import { Marca } from "./Marca";
  * coisa para caixa inexistente e senha errada — de proposito. Aqui nao ha
  * "usuario nao encontrado" para confirmar quais enderecos existem.
  */
-export function FormularioEntrar({ aviso }: { aviso?: string | null } = {}) {
+export function FormularioEntrar({ aviso, destino = "/caixa" }: { aviso?: string | null; destino?: string } = {}) {
   const [endereco, setEndereco] = useState("");
   const [senha, setSenha] = useState("");
   const [erro, setErro] = useState<string | null>(null);
@@ -50,7 +51,8 @@ export function FormularioEntrar({ aviso }: { aviso?: string | null } = {}) {
         return;
       }
 
-      window.location.href = corpo?.mailbox?.mustChangePassword ? "/definir-senha" : "/caixa";
+      window.location.href = corpo?.mailbox?.mustChangePassword
+        ? `/definir-senha?${new URLSearchParams({ returnTo: destinoMail(destino) })}` : destinoMail(destino);
     } catch {
       setErro("Sem conexao com o servidor. Tente novamente.");
       setEnviando(false);

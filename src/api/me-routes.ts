@@ -42,7 +42,9 @@ import { createFolder, deleteFolder, renameFolder } from "../services/folders.js
 import { createRule, deleteRule, listRules, updateRule } from "../services/rules.js";
 import { autenticarChave, criarChave, ehAdministrador, escopoDoToken, listarChaves, revogarChave, type ApiKeyScope } from "../services/apiKeys.js";
 import { handleAdminRoute } from "./admin-routes.js";
-import { chavePublica, listarInscricoes, pushDisponivel, registrarInscricao, removerInscricao } from "../services/push.js";
+import { avisoPermitido, avisosHabilitadosAqui, habilitarAvisosAqui, chavePublica, listarInscricoes, pushDisponivel, registrarInscricao, removerInscricao, testarAviso } from "../services/push.js";
+import { receberLogoutSso, receberSinalSso } from "../services/ssoRevocation.js";
+import { cursorMensagem, eventosMensagem, lerCursorMensagem } from "../services/messageEvents.js";
 import { getCalendarSettings, getSettings, updateCalendarSettings, updateProfile, updateSettings } from "../services/settings.js";
 import { listSendAs, searchContacts } from "../services/contacts.js";
 import { deleteUpload, listUploads, storeUpload } from "../services/uploads.js";
@@ -80,7 +82,7 @@ const refreshSchema = z.object({ refreshToken: z.string().min(10) });
 const firstPasswordSchema = z.object({ newPassword: z.string().min(12).max(500) });
 
 const ssoSchema = z.object({
-  ssoToken: z.string().min(20),
+  ssoToken: z.string().min(20).max(8192),
   address: z.string().min(3).optional(),
 });
 
@@ -245,6 +247,7 @@ const VEDADO_A_CHAVE = [
   "/v1/me/password",
   "/v1/me/totp",
   "/v1/me/sessions",
+  "/v1/me/push",
   "/v1/me/migracao",
   "/v1/me/api-keys",
   "/v1/me/profile",
@@ -280,8 +283,13 @@ const SSE_MAX_MS = 5 * 60_000;
  * derruba stream ocioso sem avisar; reconectar de tempos em tempos e mais
  * confiavel do que descobrir que o canal morreu calado.
  */
-async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId: string): Promise<void> {
-  let ultimoCalendarSeq = (await prisma.mailbox.findUnique({ where: { id: mailboxId }, select: { davCalendarSeq: true } }))?.davCalendarSeq ?? 0n;
+export async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId: string,
+  tempos: { pollMs: number; maxMs: number } = { pollMs: SSE_POLL_MS, maxMs: SSE_MAX_MS }): Promise<void> {
+  const inicial = await prisma.mailbox.findUniqueOrThrow({ where: { id: mailboxId }, select: { davCalendarSeq: true, messageEventSeq: true } });
+  let ultimoCalendarSeq = inicial.davCalendarSeq;
+  const recebido = req.headers["last-event-id"];
+  const cursorPedido = typeof recebido === "string" ? recebido : new URL(req.url ?? "/", "http://localhost").searchParams.get("cursor") ?? undefined;
+  let ultimaMensagemSeq = lerCursorMensagem(cursorPedido, mailboxId, inicial.messageEventSeq);
   let ultimoLembrete = new Date(Date.now() - 2 * 60_000);
   let ultimoLembreteId = "";
   res.writeHead(200, {
@@ -292,12 +300,17 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId
     "X-Accel-Buffering": "no",
   });
 
-  const enviar = (evento: string, dados: unknown) => {
-    res.write(`event: ${evento}\ndata: ${JSON.stringify(dados)}\n\n`);
+  const enviar = (evento: string, dados: unknown, seq = ultimaMensagemSeq) => {
+    if (!ativo || res.writableEnded || res.destroyed) return false;
+    res.write(`id: ${cursorMensagem(mailboxId, seq)}\nevent: ${evento}\ndata: ${JSON.stringify(dados)}\n\n`);
+    // Nenhum await entre publicar o evento e avancar o cursor. O encerramento
+    // por prazo nunca anuncia uma posicao cujo message ainda esta em consulta.
+    ultimaMensagemSeq = seq;
+    return true;
   };
 
-  let ultimoVisto = new Date();
   let ativo = true;
+  let consultando = false;
 
   const encerrar = () => {
     if (!ativo) return;
@@ -307,19 +320,19 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId
     res.end();
   };
 
-  req.on("close", encerrar);
+  // IncomingMessage termina quando o request GET acaba, nao quando o stream
+  // da resposta acaba. O dono desta conexao longa e o ServerResponse.
+  res.once("close", encerrar);
 
   const timer = setInterval(() => {
     void (async () => {
-      if (!ativo) return;
+      if (!ativo || consultando) return;
+      consultando = true;
       try {
-        const [novas, caixa, lembretes] = await Promise.all([
-          prisma.message.findMany({
-            where: { mailboxId, receivedAt: { gt: ultimoVisto }, folder: { kind: "inbox" } },
-            orderBy: { receivedAt: "asc" },
-            select: { id: true, fromAddress: true, fromName: true, subject: true, receivedAt: true },
-            take: 20,
-          }),
+        // Logout/suspensao/troca de dono tambem encerram conexoes ja abertas.
+        const sessaoAtual = await autenticar(req, "/v1/me/events");
+        const [chegadas, caixa, lembretes] = await Promise.all([
+          eventosMensagem(mailboxId, ultimaMensagemSeq),
           prisma.mailbox.findUnique({ where: { id: mailboxId }, select: { davCalendarSeq: true } }),
           prisma.calendarReminderDelivery.findMany({
             where: { mailboxId, status: "sent", OR: [{ deliveredAt: { gt: ultimoLembrete } }, { deliveredAt: ultimoLembrete, id: { gt: ultimoLembreteId } }] },
@@ -328,11 +341,22 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId
             take: 20,
           }),
         ]);
+        if (!ativo) return;
 
         let enviou = false;
-        if (novas.length > 0) {
-          ultimoVisto = novas[novas.length - 1]?.receivedAt ?? ultimoVisto;
-          enviar("message", { messages: novas, unread: (await unreadCounts(mailboxId)).total });
+        const cursorMudou = ultimaMensagemSeq !== chegadas.seq;
+        if (chegadas.messages.length > 0) {
+          const [habilitado, entrada, outrasPastas] = await Promise.all([
+            avisosHabilitadosAqui(mailboxId, sessaoAtual.sessionId),
+            avisoPermitido(mailboxId, { titulo: "Mensagem nova", corpo: "", naEntrada: true }),
+            avisoPermitido(mailboxId, { titulo: "Mensagem nova", corpo: "", naEntrada: false }),
+          ]);
+          const notifyIds = habilitado ? chegadas.avisos.filter((aviso) => aviso.tipo === "seguranca" ||
+            (aviso.tipo === "mensagem" && !["spam", "trash", "sent", "drafts"].includes(aviso.pasta) && (aviso.pasta === "inbox" ? entrada : outrasPastas))).map((aviso) => aviso.id) : [];
+          enviar("message", { messages: chegadas.messages, unread: (await unreadCounts(mailboxId)).total, notify: notifyIds.length > 0, notifyIds }, chegadas.seq);
+          enviou = true;
+        } else if (cursorMudou) {
+          enviar("checkpoint", {}, chegadas.seq);
           enviou = true;
         }
         if (caixa && caixa.davCalendarSeq > ultimoCalendarSeq) {
@@ -353,16 +377,18 @@ async function streamEvents(req: IncomingMessage, res: ServerResponse, mailboxId
         }
       } catch {
         encerrar();
+      } finally {
+        consultando = false;
       }
     })();
-  }, SSE_POLL_MS);
+  }, tempos.pollMs);
 
   const limite = setTimeout(() => {
     enviar("reconnect", { reason: "limite de tempo da conexao" });
     encerrar();
-  }, SSE_MAX_MS);
+  }, tempos.maxMs);
 
-  enviar("ready", { mailboxId, pollMs: SSE_POLL_MS });
+  enviar("ready", { mailboxId, pollMs: tempos.pollMs });
 
   await new Promise<void>((resolve) => {
     const checar = setInterval(() => {
@@ -410,11 +436,16 @@ async function autenticar(req: IncomingMessage, path = ""): Promise<Sessao> {
 
   const sessao = await prisma.mailSession.findFirst({
     where: { id: payload.sid, mailboxId: payload.sub, revokedAt: null, expiresAt: { gt: new Date() } },
-    select: { id: true, mailbox: { select: { status: true, mustChangePassword: true } } },
+    select: { id: true, authSource: true, ssoEmail: true, mailbox: { select: { status: true, mustChangePassword: true, ownerEmail: true, localPart: true, domain: { select: { name: true } } } } },
   });
 
   if (!sessao) throw new AuthError("Sessao encerrada. Faca login novamente.");
+  if (sessao.authSource === "legacy") throw new AuthError("Entre novamente para atualizar seu acesso.");
   if (sessao.mailbox.status !== "active") throw new AuthError("Caixa indisponivel no momento.", 403);
+  if (sessao.ssoEmail && sessao.mailbox.ownerEmail !== sessao.ssoEmail &&
+      `${sessao.mailbox.localPart}@${sessao.mailbox.domain.name}` !== sessao.ssoEmail) {
+    throw new AuthError("Esta caixa nao pertence mais a sua conta.", 403);
+  }
 
   void prisma.mailSession
     .update({ where: { id: sessao.id }, data: { lastUsedAt: new Date() } })
@@ -456,6 +487,18 @@ export async function handleUserRoute(
   }
 
   // Login pelo SSO (auth.avilaops.com): o webmail repassa o cookie avila_sso.
+  if (path === "/v1/auth/sso/events" && method === "POST") {
+    const input = z.object({ securityEventToken: z.string().min(20).max(8192) }).parse(await readBody(req));
+    json(res, 200, await receberSinalSso(input.securityEventToken));
+    return true;
+  }
+
+  if (path === "/v1/auth/sso/logout" && method === "POST") {
+    const input = z.object({ logoutToken: z.string().min(20).max(8192) }).parse(await readBody(req));
+    json(res, 200, await receberLogoutSso(input.logoutToken));
+    return true;
+  }
+
   if (path === "/v1/auth/sso" && method === "POST") {
     const input = ssoSchema.parse(await readBody(req));
     json(res, 200, await loginSso({ ...input, ip: clientIp(req), userAgent: userAgent(req) }));
@@ -499,14 +542,26 @@ export async function handleUserRoute(
     json(res, 200, {
       disponivel: pushDisponivel(),
       chavePublica: chavePublica(),
-      aparelhos: await listarInscricoes(sessao.mailboxId),
+      aparelhos: await listarInscricoes(sessao.mailboxId, sessao.sessionId),
+      habilitadoAqui: await avisosHabilitadosAqui(sessao.mailboxId, sessao.sessionId),
     });
     return true;
   }
 
   if (path === "/v1/me/push" && method === "POST") {
     const input = pushSchema.parse(await readBody(req));
-    json(res, 201, await registrarInscricao(sessao.mailboxId, input, userAgent(req)));
+    json(res, 201, await registrarInscricao(sessao.mailboxId, input, userAgent(req), sessao.sessionId));
+    return true;
+  }
+
+  if (path === "/v1/me/push" && method === "PUT") {
+    const input = z.object({ enabled: z.boolean() }).parse(await readBody(req));
+    json(res, 200, await habilitarAvisosAqui(sessao.mailboxId, sessao.sessionId, input.enabled));
+    return true;
+  }
+
+  if (path === "/v1/me/push/test" && method === "POST") {
+    json(res, 200, await testarAviso(sessao.mailboxId, sessao.sessionId));
     return true;
   }
 

@@ -60,9 +60,9 @@ async function entregar(input: {
     });
 
     const bruta = await composer.compile().build();
-    await storeCopyInMailbox(input.mailboxId, bruta, "inbox");
+    const messageId = await storeCopyInMailbox(input.mailboxId, bruta, "inbox", { notificationKind: "seguranca" });
 
-    await enviarAviso(input.mailboxId, { titulo: input.push.titulo, corpo: input.push.corpo, tipo: "seguranca" });
+    await enviarAviso(input.mailboxId, { titulo: input.push.titulo, corpo: input.push.corpo, tipo: "seguranca", ...(messageId ? { messageId } : {}) });
 
     await prisma.mailEvent.create({
       data: {

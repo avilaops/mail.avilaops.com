@@ -172,6 +172,8 @@ export async function deliverToMailbox(
   raw: Buffer,
   auth: InboundAuthResult | null,
   options: {
+    /** Somente chamadores internos atribuem avisos a copias de servico. */
+    notificationKind?: "mensagem" | "seguranca";
     forceFolder?: SystemFolderKind;
     envelopeFrom?: string;
     /**
@@ -290,6 +292,7 @@ export async function deliverToMailbox(
         hasAttachments: parsed.attachments.length > 0,
         uid,
         receivedAt,
+        notificationKind: options.notificationKind ?? (posta ? "none" : "mensagem"),
         seen: options.flags?.seen ?? regra?.seen ?? false,
         flagged: options.flags?.flagged ?? regra?.flagged ?? false,
         answered: options.flags?.answered ?? false,
@@ -315,10 +318,14 @@ export async function deliverToMailbox(
       });
     }
 
-    await tx.mailbox.update({
+    const contador = await tx.mailbox.update({
       where: { id: target.mailboxId },
-      data: { usedBytes: { increment: size } },
+      data: { usedBytes: { increment: size }, messageEventSeq: { increment: 1 } },
+      select: { messageEventSeq: true },
     });
+    // O lock da caixa permanece ate o commit: outra entrega nunca publica
+    // uma sequencia maior antes desta, mesmo se os blobs levarem tempos distintos.
+    await tx.message.update({ where: { id: created.id }, data: { arrivalSeq: contador.messageEventSeq } });
 
     return created;
   });
@@ -432,6 +439,7 @@ export async function storeCopyInMailbox(
   mailboxId: string,
   raw: Buffer,
   folder: SystemFolderKind = "sent",
+  options: { notificationKind?: "mensagem" | "seguranca" } = {},
 ): Promise<string | null> {
   try {
     const mailbox = await prisma.mailbox.findUnique({
@@ -451,7 +459,7 @@ export async function storeCopyInMailbox(
       },
       raw,
       null,
-      { forceFolder: folder },
+      { forceFolder: folder, notificationKind: options.notificationKind },
     );
 
     return outcome.status === "delivered" ? outcome.messageId : null;

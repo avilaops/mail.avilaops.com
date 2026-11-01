@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { chamarApi, chamarBrutoComSessao, chamarComSessao, origemDaRequisicao } from "@/lib/api";
-import { csrfValido, limparSessao } from "@/lib/sessao";
+import { csrfValido, limparMarcaTrocarSenha, limparSessao, tokenDeRefresh } from "@/lib/sessao";
+import { webmailBase } from "@/lib/sso";
 
 /** Rotas que devolvem binario em vez de JSON. */
 const EH_DOWNLOAD = /^\/me\/messages\/[\w-]+\/(attachments\/[\w-]+|raw)(\?|$)/;
@@ -24,6 +25,23 @@ const SEM_SESSAO = new Set(["auth/forgot-password", "auth/reset-password"]);
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+async function sessaoRecusada(request: NextRequest): Promise<NextResponse> {
+  if (!(await tokenDeRefresh())) {
+    // O cookie legado pode existir, mas seu Path impede le-lo neste request.
+    // GETs podem passar pela ponte e repetir o destino sem perder o corpo.
+    if (request.method === "GET") {
+      const ponte = new URL("/api/sessao/retomar", webmailBase());
+      ponte.searchParams.set("returnTo", `${request.nextUrl.pathname}${request.nextUrl.search}`);
+      return NextResponse.redirect(ponte);
+    }
+    return NextResponse.json({ erro: "Sessao precisa ser renovada." }, {
+      status: 401, headers: { "X-Mail-Retomar": "1" },
+    });
+  }
+  await limparSessao();
+  return NextResponse.json({ erro: "Sessao encerrada. Entre novamente." }, { status: 401 });
+}
 
 async function encaminhar(request: NextRequest, caminho: string[]): Promise<NextResponse> {
   const rota = caminho.join("/");
@@ -62,10 +80,13 @@ async function encaminhar(request: NextRequest, caminho: string[]): Promise<Next
   // resposta inteira para reserializar em JSON, como as demais rotas, travaria
   // a conexao para sempre — o stream nunca "termina".
   if (request.method === "GET" && rota === "me/events") {
-    const fluxo = await chamarBrutoComSessao(destino, { semTempoLimite: true });
+    const lastEventId = request.headers.get("last-event-id") ?? undefined;
+    const fluxo = await chamarBrutoComSessao(destino, { semTempoLimite: true, origem: origemDaRequisicao(request), signal: request.signal,
+      lastEventId: lastEventId && lastEventId.length <= 180 ? lastEventId : undefined });
 
-    if (!fluxo?.ok || !fluxo.body) {
-      return NextResponse.json({ erro: "Sessao encerrada. Entre novamente." }, { status: 401 });
+    if (!fluxo.ok || !fluxo.body) {
+      if (fluxo.status === 401) return sessaoRecusada(request);
+      return NextResponse.json({ erro: fluxo.status === 401 ? "Sessao encerrada. Entre novamente." : "Nao foi possivel conectar os avisos. Tente novamente." }, { status: fluxo.ok ? 502 : fluxo.status });
     }
 
     return new NextResponse(fluxo.body, {
@@ -83,11 +104,10 @@ async function encaminhar(request: NextRequest, caminho: string[]): Promise<Next
   // define. Reserializar como JSON corromperia o arquivo e derrubaria o
   // Content-Disposition que impede um anexo HTML de abrir na nossa origem.
   if (request.method === "GET" && EH_DOWNLOAD.test(destino)) {
-    const bruta = await chamarBrutoComSessao(destino);
+    const bruta = await chamarBrutoComSessao(destino, { origem: origemDaRequisicao(request) });
 
-    if (!bruta) {
-      await limparSessao();
-      return NextResponse.json({ erro: "Sessao encerrada. Entre novamente." }, { status: 401 });
+    if (bruta.status === 401) {
+      return sessaoRecusada(request);
     }
 
     if (!bruta.ok) {
@@ -119,6 +139,7 @@ async function encaminhar(request: NextRequest, caminho: string[]): Promise<Next
   const ifMatch = request.headers.get("if-match");
   const resposta = await chamarComSessao<unknown>(destino, {
     method: request.method,
+    origem: origemDaRequisicao(request),
     body: corpo,
     ...(ifMatch ? { headers: { "If-Match": ifMatch } } : {}),
   });
@@ -126,14 +147,14 @@ async function encaminhar(request: NextRequest, caminho: string[]): Promise<Next
   if (resposta.status === 401) {
     // Sessao morreu de vez: limpa os cookies para a proxima navegacao cair no
     // login em vez de repetir o ciclo de renovacao fracassada.
-    await limparSessao();
-    return NextResponse.json({ erro: "Sessao encerrada. Entre novamente." }, { status: 401 });
+    return sessaoRecusada(request);
   }
 
   if (!resposta.ok) {
     return NextResponse.json({ erro: resposta.erro }, { status: resposta.status });
   }
 
+  if (rota === "me/first-password" && request.method === "POST") await limparMarcaTrocarSenha();
   return NextResponse.json(resposta.dados, { status: resposta.status });
 }
 

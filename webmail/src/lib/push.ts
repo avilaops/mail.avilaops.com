@@ -12,12 +12,14 @@
 export interface AparelhoPush {
   id: string;
   endpoint: string;
+  nesteAparelho: boolean;
   userAgent: string | null;
   lastSentAt: string | null;
   createdAt: string;
 }
 
 export interface EstadoPush {
+  habilitadoAqui: boolean;
   disponivel: boolean;
   chavePublica: string | null;
   aparelhos: AparelhoPush[];
@@ -54,10 +56,23 @@ export async function inscricaoAtual(): Promise<PushSubscription | null> {
   return (await registro?.pushManager.getSubscription()) ?? null;
 }
 
+export function inscricaoConfereChave(inscricao: PushSubscription, chavePublica: string): boolean {
+  try {
+    const atual = inscricao.options.applicationServerKey;
+    const esperada = new Uint8Array(paraBytes(chavePublica));
+    return Boolean(atual && new Uint8Array(atual).length === esperada.length && new Uint8Array(atual).every((byte, indice) => byte === esperada[indice]));
+  } catch {
+    return false;
+  }
+}
+
 export async function inscrever(chavePublica: string): Promise<PushSubscription> {
   const registro = await registrarWorker();
   const existente = await registro.pushManager.getSubscription();
-  if (existente) return existente;
+  if (existente) {
+    if (inscricaoConfereChave(existente, chavePublica)) return existente;
+    if (!await existente.unsubscribe()) throw new Error("Não foi possível atualizar a autorização deste navegador.");
+  }
 
   return registro.pushManager.subscribe({
     // Exigido pelos navegadores: aviso de push tem que ser visivel ao usuario,
@@ -71,6 +86,7 @@ export async function desinscrever(): Promise<string | null> {
   const inscricao = await inscricaoAtual();
   if (!inscricao) return null;
   const endpoint = inscricao.endpoint;
-  await inscricao.unsubscribe().catch(() => undefined);
+  const removida = await inscricao.unsubscribe();
+  if (!removida) throw new Error("O navegador não confirmou a remoção do aviso em segundo plano.");
   return endpoint;
 }

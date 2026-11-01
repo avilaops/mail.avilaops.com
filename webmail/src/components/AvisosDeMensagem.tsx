@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/cliente";
 import { estadoDaPermissao, pedirPermissao, type EstadoPermissao } from "@/lib/notificacoes";
-import { desinscrever, inscrever, inscricaoAtual, suportaPush, type EstadoPush } from "@/lib/push";
+import { desinscrever, inscrever, inscricaoAtual, inscricaoConfereChave, suportaPush, type EstadoPush } from "@/lib/push";
 
 interface Preferencias {
   notifyEnabled: boolean;
@@ -59,16 +59,19 @@ export function AvisosDeMensagem() {
   const [inscritoAqui, setInscritoAqui] = useState(false);
   const [ocupado, setOcupado] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  const [resultadoTeste, setResultadoTeste] = useState<string | null>(null);
   const [prefs, setPrefs] = useState<Preferencias | null>(null);
 
   const carregar = useCallback(async () => {
+    setPermissao(estadoDaPermissao());
     const [dados, preferencias] = await Promise.all([
       api<EstadoPush>("/me/push"),
       api<Preferencias>("/me/settings"),
     ]);
     setEstado(dados);
     setPrefs(preferencias);
-    setInscritoAqui(Boolean(await inscricaoAtual()));
+    const local = await inscricaoAtual();
+    setInscritoAqui(Boolean(dados.disponivel && dados.chavePublica && dados.habilitadoAqui && local && inscricaoConfereChave(local, dados.chavePublica) && dados.aparelhos.some((aparelho) => aparelho.nesteAparelho && aparelho.endpoint === local.endpoint)));
   }, []);
 
   /** Salva na hora: preferência de aviso com botão "Salvar" é esquecida ligada. */
@@ -88,6 +91,9 @@ export function AvisosDeMensagem() {
   useEffect(() => {
     setPermissao(estadoDaPermissao());
     void carregar().catch((falha) => setErro(falha instanceof Error ? falha.message : "Falha ao carregar."));
+    const atualizar = () => { void carregar().catch((falha) => setErro(falha instanceof Error ? falha.message : "Falha ao atualizar os avisos.")); };
+    window.addEventListener("focus", atualizar);
+    return () => window.removeEventListener("focus", atualizar);
   }, [carregar]);
 
   async function ligarNesteAparelho() {
@@ -98,15 +104,17 @@ export function AvisosDeMensagem() {
       setPermissao(resposta);
       if (resposta !== "concedida") return;
 
-      if (estado?.disponivel && estado.chavePublica) {
+      if (suportaPush() && estado?.disponivel && estado.chavePublica) {
         const inscricao = await inscrever(estado.chavePublica);
         const bruta = inscricao.toJSON() as { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
         await api("/me/push", {
           method: "POST",
           body: { endpoint: bruta.endpoint, keys: { p256dh: bruta.keys?.p256dh, auth: bruta.keys?.auth } },
         });
-        await carregar();
+      } else {
+        await api("/me/push", { method: "PUT", body: { enabled: true } });
       }
+      await carregar();
     } catch (falha) {
       setErro(falha instanceof Error ? falha.message : "Não foi possível ligar os avisos.");
     } finally {
@@ -118,8 +126,11 @@ export function AvisosDeMensagem() {
     setErro(null);
     setOcupado(true);
     try {
-      const endpoint = await desinscrever();
-      if (endpoint) await api("/me/push", { method: "DELETE", body: { endpoint } });
+      // O servidor cala ambos os canais antes de remover a inscricao local.
+      // Falha no navegador nao pode manter o servidor enviando avisos.
+      await api("/me/push", { method: "PUT", body: { enabled: false } });
+      await carregar();
+      await desinscrever();
       await carregar();
     } catch (falha) {
       setErro(falha instanceof Error ? falha.message : "Não foi possível desligar.");
@@ -128,7 +139,8 @@ export function AvisosDeMensagem() {
     }
   }
 
-  const semSuporte = !suportaPush();
+  const semSuporte = permissao === "indisponivel";
+  const habilitadoAqui = Boolean(estado?.habilitadoAqui && permissao === "concedida");
 
   return (
     <div className="space-y-4">
@@ -137,6 +149,7 @@ export function AvisosDeMensagem() {
           {erro}
         </p>
       )}
+      {resultadoTeste && <p role="status" className="text-sm">{resultadoTeste}</p>}
 
       <div className="rounded-lg border border-[var(--color-borda)] px-4 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -145,15 +158,17 @@ export function AvisosDeMensagem() {
             <p className="mt-0.5 text-xs text-[var(--color-texto-fraco)]">
               {inscritoAqui && permissao === "concedida"
                 ? "Ligado: você recebe o aviso mesmo com o webmail fechado."
+                : habilitadoAqui
+                  ? "Ligado com o webmail aberto. O aviso em segundo plano ainda não foi confirmado neste aparelho."
                 : permissao === "negada"
                   ? "O navegador está bloqueando avisos deste site. Libere nas permissões do cadeado, ao lado do endereço, e volte aqui."
                   : semSuporte
-                    ? "Este navegador não suporta avisos em segundo plano."
+                    ? "Este navegador não suporta avisos do sistema."
                     : "Aviso do sistema quando chegar mensagem — inclusive com a aba fechada."}
             </p>
           </div>
 
-          {inscritoAqui && permissao === "concedida" ? (
+          {habilitadoAqui ? (
             <button type="button" onClick={() => void desligarNesteAparelho()} disabled={ocupado} className={BOTAO_LEVE}>
               {ocupado ? "…" : "Desligar aqui"}
             </button>
@@ -161,7 +176,7 @@ export function AvisosDeMensagem() {
             <button
               type="button"
               onClick={() => void ligarNesteAparelho()}
-              disabled={ocupado || semSuporte || permissao === "negada"}
+              disabled={ocupado || !estado || semSuporte || permissao === "negada"}
               className={BOTAO}
             >
               {ocupado ? "Ligando…" : "Ligar avisos"}
@@ -172,10 +187,30 @@ export function AvisosDeMensagem() {
         {estado && !estado.disponivel && (
           <p className="mt-2 text-xs text-[var(--color-atencao)]">
             O aviso com a aba fechada ainda não está ligado no servidor. Com a aba aberta, o contador no título e o
-            balão do sistema já funcionam.
+            balão do sistema funcionam depois de você autorizar este aparelho.
           </p>
         )}
       </div>
+
+      {habilitadoAqui && !inscritoAqui && suportaPush() && estado?.disponivel && estado.chavePublica && (
+        <button type="button" className={BOTAO} disabled={ocupado} onClick={() => void ligarNesteAparelho()}>
+          Ativar em segundo plano
+        </button>
+      )}
+      {inscritoAqui && (
+        <button type="button" className={BOTAO_LEVE} disabled={ocupado} onClick={() => {
+          setOcupado(true); setErro(null); setResultadoTeste(null);
+          void api<{ tentativas: number; enviados: number }>("/me/push/test", { method: "POST" })
+            .then(async (resultado) => {
+              setResultadoTeste(resultado.enviados > 0
+                ? "O serviço do navegador aceitou o aviso. Confira se ele apareceu neste aparelho."
+                : "Nenhum aviso foi aceito. Ative novamente este aparelho e tente outra vez.");
+              await carregar();
+            })
+            .catch((falha) => setErro(falha instanceof Error ? falha.message : "Não foi possível testar o aviso."))
+            .finally(() => setOcupado(false));
+        }}>Enviar aviso de teste</button>
+      )}
 
       {prefs && (
         <div className="space-y-3 rounded-lg border border-[var(--color-borda)] px-4 py-3">
@@ -274,8 +309,11 @@ export function AvisosDeMensagem() {
                     void (async () => {
                       setOcupado(true);
                       try {
+                        setErro(null);
                         await api("/me/push", { method: "DELETE", body: { endpoint: aparelho.endpoint } });
                         await carregar();
+                      } catch (falha) {
+                        setErro(falha instanceof Error ? falha.message : "Não foi possível remover o aparelho.");
                       } finally {
                         setOcupado(false);
                       }
