@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { chamarApi, chamarBrutoComSessao, chamarComSessao, origemDaRequisicao } from "@/lib/api";
 import { csrfValido, limparMarcaTrocarSenha, limparSessao, tokenDeRefresh } from "@/lib/sessao";
 import { webmailBase } from "@/lib/sso";
+import { fluxoCancelavel, sinalDeEncerramento } from "@/lib/encerramento";
 
 /** Rotas que devolvem binario em vez de JSON. */
 const EH_DOWNLOAD = /^\/me\/messages\/[\w-]+\/(attachments\/[\w-]+|raw)(\?|$)/;
@@ -81,7 +82,8 @@ async function encaminhar(request: NextRequest, caminho: string[]): Promise<Next
   // a conexao para sempre — o stream nunca "termina".
   if (request.method === "GET" && rota === "me/events") {
     const lastEventId = request.headers.get("last-event-id") ?? undefined;
-    const fluxo = await chamarBrutoComSessao(destino, { semTempoLimite: true, origem: origemDaRequisicao(request), signal: request.signal,
+    const sinal = AbortSignal.any([request.signal, sinalDeEncerramento()]);
+    const fluxo = await chamarBrutoComSessao(destino, { semTempoLimite: true, origem: origemDaRequisicao(request), signal: sinal,
       lastEventId: lastEventId && lastEventId.length <= 180 ? lastEventId : undefined });
 
     if (!fluxo.ok || !fluxo.body) {
@@ -89,7 +91,7 @@ async function encaminhar(request: NextRequest, caminho: string[]): Promise<Next
       return NextResponse.json({ erro: fluxo.status === 401 ? "Sessao encerrada. Entre novamente." : "Nao foi possivel conectar os avisos. Tente novamente." }, { status: fluxo.ok ? 502 : fluxo.status });
     }
 
-    return new NextResponse(fluxo.body, {
+    return new NextResponse(fluxoCancelavel(fluxo.body, sinal), {
       status: 200,
       headers: {
         "Content-Type": "text/event-stream; charset=utf-8",

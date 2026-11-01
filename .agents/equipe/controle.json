@@ -6,6 +6,22 @@
   ],
   "tasks": [
     {
+      "id": "MAIL-ENCERRAMENTO-20261101-03",
+      "title": "Encerrar fluxos SSE no deploy sem interromper requisicoes comuns",
+      "responsible": "nicolas",
+      "status": "em-andamento",
+      "acceptance": [
+        "Reproduzir encerramento bloqueado com SSE ativo no standalone",
+        "Fechar SSE e liberar conexoes na API ao receber SIGTERM ou SIGINT",
+        "Concluir requisicoes comuns em andamento antes de sair",
+        "Publicar pelo CI e verificar reinicio sem timeout em producao"
+      ],
+      "evidence": [
+        "Journal de producao confirmou timeout de 90s e SIGKILL no deploy anterior; Next aguarda server.close enquanto SSE da API permanece aberto por ate cinco minutos",
+        "Reproducao em Linux/WSL com standalone anterior: rascunho concluiu, mas dois fluxos SSE ativos impediram encerramento e teste precisou enviar SIGKILL apos 5s"
+      ]
+    },
+    {
       "id": "MAIL-LEITURA-20261101-02",
       "title": "Melhorar largura de leitura e ampliar a composicao",
       "responsible": "nicolas",
