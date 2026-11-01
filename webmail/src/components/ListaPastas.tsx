@@ -25,6 +25,7 @@ interface Props {
   pastaAtual: string;
   onEscolher: (chave: string) => void;
   onEscrever: () => void;
+  onVoltar: () => void;
   onCriarPasta: (nome: string) => Promise<void>;
   onRenomearPasta: (id: string, nome: string) => Promise<void>;
   onExcluirPasta: (id: string, nome: string) => Promise<void>;
@@ -36,6 +37,7 @@ export function ListaPastas({
   pastaAtual,
   onEscolher,
   onEscrever,
+  onVoltar,
   onCriarPasta,
   onRenomearPasta,
   onExcluirPasta,
@@ -135,7 +137,10 @@ export function ListaPastas({
   }
 
   return (
-    <nav className="flex h-full w-full shrink-0 flex-col border-r md:w-60 border-[var(--color-borda)] bg-[var(--color-fundo-suave)]">
+    <nav aria-label="Pastas de e-mail" className="flex h-full w-full shrink-0 flex-col border-r xl:w-52 border-[var(--color-borda)] bg-[var(--color-fundo-suave)]">
+      <button type="button" onClick={onVoltar} className="mx-3 mt-3 rounded-md border border-[var(--color-borda)] px-3 py-2 text-left text-sm xl:hidden">
+        ← Voltar para mensagens
+      </button>
       <div className="px-4 py-4">
         <p className="truncate text-sm font-medium" title={caixa?.address}>
           {caixa?.displayName || caixa?.address || "…"}

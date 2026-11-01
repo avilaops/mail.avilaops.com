@@ -159,6 +159,8 @@ interface Props {
   onAbrirDaConversa: (id: string) => void;
   enderecoCaixa?: string;
   agendaHabilitada?: boolean;
+  leituraAmpliada?: boolean;
+  onAlternarAmpliacao?: () => void;
 }
 
 export function convidadosSugeridosDeMensagem(mensagem: MensagemCompleta, enderecoCaixa?: string): string[] {
@@ -191,6 +193,8 @@ export function LeitorMensagem({
   onAbrirDaConversa,
   enderecoCaixa,
   agendaHabilitada = true,
+  leituraAmpliada = false,
+  onAlternarAmpliacao,
 }: Props) {
   const router = useRouter();
   const [imagensLiberadas, setImagensLiberadas] = useState(false);
@@ -329,7 +333,7 @@ export function LeitorMensagem({
           >
             ←
           </button>
-          <h1 className="min-w-0 flex-1 text-base font-semibold leading-snug md:text-lg">
+          <h1 className="min-w-0 flex-1 text-base font-semibold leading-snug [overflow-wrap:anywhere] md:text-lg">
             {mensagem.subject || "(sem assunto)"}
           </h1>
           {/* No celular a barra de acoes quebra em tres linhas e "Apagar" se
@@ -453,6 +457,19 @@ export function LeitorMensagem({
           </button>
 
           <Menu titulo="Mais ações" classeGatilho={acaoIcone} gatilho="⋯" alinhar="direita" itens={maisAcoes} />
+          {onAlternarAmpliacao && (
+            <button
+              type="button"
+              onClick={onAlternarAmpliacao}
+              aria-pressed={leituraAmpliada}
+              aria-label={leituraAmpliada ? "Restaurar colunas" : "Ampliar leitura"}
+              title={leituraAmpliada ? "Restaurar colunas (Esc)" : "Ampliar leitura"}
+              className={`${acao} ml-auto hidden md:inline-flex`}
+            >
+              <Icone><path d={leituraAmpliada ? "M4 9h5V4m11 5h-5V4M4 15h5v5m11-5h-5v5" : "M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5"} /></Icone>
+              {leituraAmpliada ? "Restaurar" : "Ampliar"}
+            </button>
+          )}
         </div>
 
         {/* Duas linhas: quem e quando; depois de onde e para quem. */}

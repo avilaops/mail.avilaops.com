@@ -68,6 +68,7 @@ const TITULOS: Record<ContextoComposicao["tipo"], string> = {
 };
 
 export function Compositor({ contexto, onFechar, onEnviado }: Props) {
+  const [ampliado, setAmpliado] = useState(false);
   const [para, setPara] = useState<string[]>(contexto.para ?? []);
   const [cc, setCc] = useState<string[]>(contexto.cc ?? []);
   const [cco, setCco] = useState<string[]>(contexto.cco ?? []);
@@ -293,7 +294,9 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
       }}
       // No celular ocupa a tela toda: painel ancorado de 340 px deixaria o
       // campo de texto com três linhas visíveis e o teclado cobrindo o resto.
-      className="topo-seguro fixed inset-0 z-30 flex flex-col border-[var(--color-borda)] bg-[var(--color-superficie)] md:inset-auto md:bottom-0 md:right-6 md:max-h-[85vh] md:w-[min(42rem,calc(100vw-3rem))] md:rounded-t-xl md:border md:shadow-2xl"
+      className={`topo-seguro rolagem-fina fixed inset-0 z-30 flex flex-col overflow-y-auto border-[var(--color-borda)] bg-[var(--color-superficie)] [&>*]:shrink-0 md:border md:shadow-2xl ${ampliado
+        ? "md:inset-4 md:mx-auto md:w-[min(64rem,calc(100vw-2rem))] md:rounded-xl"
+        : "md:inset-auto md:bottom-0 md:right-6 md:h-[min(42rem,85dvh)] md:w-[min(42rem,calc(100vw-3rem))] md:rounded-t-xl"}`}
     >
       <header className="flex items-center justify-between bg-[var(--color-forte)] px-4 py-2.5 text-[var(--color-sobre-forte)] md:rounded-t-xl">
         <h2 className="text-sm font-medium">{TITULOS[contexto.tipo]}</h2>
@@ -303,6 +306,15 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
               {estadoRascunho === "salvando" ? "salvando…" : "rascunho salvo"}
             </span>
           )}
+          <button
+            type="button"
+            onClick={() => setAmpliado((atual) => !atual)}
+            aria-label={ampliado ? "Restaurar composição" : "Ampliar composição"}
+            aria-pressed={ampliado}
+            className="hidden rounded border border-current/30 px-2 py-1 text-xs transition hover:bg-[var(--color-sobre-forte)]/10 md:inline-flex"
+          >
+            {ampliado ? "Restaurar" : "Ampliar"}
+          </button>
           <button
             onClick={onFechar}
             aria-label="Fechar"

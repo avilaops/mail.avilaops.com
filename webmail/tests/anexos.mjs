@@ -56,12 +56,34 @@ export async function responderAnexos(req, res, input, responder) {
 }
 
 export async function testarAnexos(pagina, base) {
-  for (const viewport of [{ width: 950, height: 900 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
+  for (const viewport of [{ width: 950, height: 900 }, { width: 768, height: 900 }, { width: 1280, height: 900 }, { width: 1440, height: 900 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
     await pagina.setViewportSize(viewport);
     await pagina.goto(`${base}/caixa?mensagem=anexos-ci`);
     const corpo = pagina.locator('iframe[title="Conteúdo da mensagem"]');
     await corpo.waitFor();
     assert.ok((await corpo.boundingBox()).height >= 160, "anexos recolhidos preservam a leitura");
+    const pastas = pagina.getByRole("navigation", { name: "Pastas de e-mail" });
+    assert.equal(await pastas.isVisible(), viewport.width >= 1280, "pastas fixas apenas quando ha espaco para tres colunas");
+    if (viewport.width >= 768) {
+      const larguraInicial = (await corpo.boundingBox()).width;
+      assert.ok(larguraInicial >= 400, "leitura tem largura util em tablet e desktop");
+      await pagina.getByRole("button", { name: "Ampliar leitura", exact: true }).click();
+      assert.ok((await corpo.boundingBox()).width >= viewport.width - 40, "leitura ampliada usa a largura da janela");
+      assert.equal(await pagina.getByRole("region", { name: "Lista de mensagens" }).isVisible(), false);
+      assert.equal(await pastas.isVisible(), false);
+      await pagina.getByRole("button", { name: "Restaurar colunas", exact: true }).press("Escape");
+      assert.equal((await corpo.boundingBox()).width, larguraInicial, "Esc restaura as colunas");
+      await pagina.getByRole("button", { name: "Ampliar leitura", exact: true }).click();
+      await pagina.getByRole("button", { name: "Restaurar colunas", exact: true }).press("/");
+      await pagina.waitForFunction(() => document.activeElement?.getAttribute("type") === "search");
+      assert.equal(await pagina.getByRole("region", { name: "Lista de mensagens" }).isVisible(), true, "atalho de busca restaura a lista antes de focar o campo");
+      if (viewport.width < 1280) {
+        await pagina.getByRole("button", { name: "Abrir pastas", exact: true }).click();
+        assert.equal(await pastas.isVisible(), true);
+        await pagina.getByRole("button", { name: "Voltar para mensagens", exact: false }).click();
+        assert.equal(await pastas.isVisible(), false);
+      }
+    }
     assert.equal(await pagina.locator("article details").getAttribute("open"), null);
     const resumo = pagina.locator("article summary");
     await resumo.press("Enter");
@@ -81,10 +103,27 @@ export async function testarAnexos(pagina, base) {
   await pagina.goto(`${base}/caixa?mensagem=sem-anexos-ci`);
   await pagina.getByRole("heading", { name: "Sem anexos CI", exact: true }).waitFor();
   assert.equal(await pagina.locator("article details").count(), 0);
+  await pagina.getByRole("region", { name: "Lista de mensagens" }).getByRole("button", { name: "Escrever", exact: true }).click();
+  await pagina.getByRole("dialog", { name: "Nova mensagem", exact: true }).getByRole("button", { name: "Fechar", exact: true }).click();
   await pagina.goto(`${base}/caixa?mensagem=anexos-ci`);
   await pagina.getByRole("button", { name: "Encaminhar", exact: true }).click();
   const dialogo = pagina.getByRole("dialog", { name: "Encaminhar", exact: true });
   assert.equal(await dialogo.getByRole("button", { name: /^Remover Documento_/ }).count(), 18);
+  const larguraComposicao = (await dialogo.boundingBox()).width;
+  await dialogo.getByRole("textbox", { name: "Corpo da mensagem", exact: true }).fill("Texto editado para encaminhar os documentos.");
+  await dialogo.getByRole("button", { name: "Ampliar composição", exact: true }).click();
+  assert.ok((await dialogo.boundingBox()).width > larguraComposicao, "composicao pode ser ampliada");
+  assert.equal(await dialogo.getByRole("textbox", { name: "Corpo da mensagem", exact: true }).innerText(), "Texto editado para encaminhar os documentos.");
+  await dialogo.getByRole("button", { name: "Restaurar composição", exact: true }).click();
+  assert.equal((await dialogo.boundingBox()).width, larguraComposicao);
+  await pagina.setViewportSize({ width: 844, height: 390 });
+  const editor = await dialogo.getByRole("textbox", { name: "Corpo da mensagem", exact: true }).boundingBox();
+  const arquivos = await dialogo.getByRole("region", { name: "Anexos para enviar" }).boundingBox();
+  assert.ok(editor.y + editor.height <= arquivos.y + 1, "editor e anexos nao se sobrepoem em janela baixa");
+  await dialogo.getByRole("button", { name: "Enviar", exact: true }).scrollIntoViewIfNeeded();
+  const botaoEnviar = await dialogo.getByRole("button", { name: "Enviar", exact: true }).boundingBox();
+  assert.ok(botaoEnviar.y >= 0 && botaoEnviar.y + botaoEnviar.height <= 390, "enviar continua acessivel pela rolagem");
+  await pagina.setViewportSize({ width: 950, height: 900 });
   await dialogo.getByRole("button", { name: /^Remover Documento_1_/ }).click();
   assert.equal(await dialogo.getByRole("button", { name: /^Remover Documento_/ }).count(), 17);
   await dialogo.getByText("rascunho salvo", { exact: true }).waitFor();

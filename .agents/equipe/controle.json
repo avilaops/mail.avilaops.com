@@ -6,6 +6,23 @@
   ],
   "tasks": [
     {
+      "id": "MAIL-LEITURA-20261101-02",
+      "title": "Melhorar largura de leitura e ampliar a composicao",
+      "responsible": "nicolas",
+      "status": "em-revisao",
+      "acceptance": [
+        "Reservar largura util para o corpo em janelas medias sem perder acesso as pastas",
+        "Ampliar e restaurar leitura e composicao sem perder conteudo e anexos",
+        "Manter editor, anexos e envio acessiveis em janelas baixas",
+        "Publicar pelo CI e verificar a interface autenticada sem enviar mensagens reais"
+      ],
+      "evidence": [
+        "Antes da melhoria, navegador de producao com 925px: leitor de 333px e corpo de 301px",
+        "Typecheck e build locais aprovados; lint sem erros, sete avisos preexistentes",
+        "Suite de navegador local aprovada em 390x844, 768x900, 844x390, 950x900, 1280x900 e 1440x900: colunas, pastas, ampliacao, Esc, busca, composicao, anexos e envio durante autosave"
+      ]
+    },
+    {
       "id": "MAIL-ANEXOS-20261101-01",
       "title": "Preservar leitura e encaminhar anexos da mensagem original",
       "responsible": "nicolas",

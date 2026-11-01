@@ -20,8 +20,9 @@ import type { Caixa, MensagemCompleta, PaginaMensagens, Pasta, ResumoMensagem } 
  * tempo — dividir isso entre componentes deixaria as tres colunas discordando
  * entre si.
  *
- * No celular as tres colunas nao cabem lado a lado, entao `vista` decide qual
- * aparece. Acima de `md` as tres ficam visiveis e `vista` e ignorada.
+ * No celular, `vista` escolhe o painel. Em telas medias, lista e leitura ficam
+ * lado a lado e as pastas abrem sob demanda. As tres colunas cabem a partir
+ * de `xl`; ampliar a leitura recolhe as colunas sem desmontar seus estados.
  */
 
 /** Recorte da lista. A API ja aceitava unread e flagged; faltava a porta. */
@@ -111,6 +112,8 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
   const [apagadaRecente, setApagadaRecente] = useState<{ ids: string[]; pastaOrigemId: string } | null>(null);
   const temporizadorApagar = useRef<number | null>(null);
   const [vista, setVista] = useState<Vista>("lista");
+  const [leituraAmpliada, setLeituraAmpliada] = useState(false);
+  const somenteLeitura = leituraAmpliada && vista === "leitura";
   const avisoAberto = useRef<string | null>(null);
 
   const [composicao, setComposicao] = useState<ContextoComposicao | null>(null);
@@ -644,7 +647,7 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
     { tecla: "g a", descricao: "Ir para a agenda", acao: () => router.push("/agenda") },
     { tecla: "j", descricao: "Próxima mensagem", acao: () => navegar(1) },
     { tecla: "k", descricao: "Mensagem anterior", acao: () => navegar(-1) },
-    { tecla: "u", descricao: "Voltar para a lista", acao: () => setVista("lista") },
+    { tecla: "u", descricao: "Voltar para a lista", acao: () => { setLeituraAmpliada(false); setVista("lista"); } },
     { tecla: "c", descricao: "Escrever", acao: () => setComposicao({ tipo: "novo" }) },
     { tecla: "r", descricao: "Responder", acao: () => aberta && responder(aberta, false) },
     { tecla: "a", descricao: "Responder a todos", acao: () => aberta && responder(aberta, true) },
@@ -655,10 +658,14 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
     {
       tecla: "/",
       descricao: "Buscar",
-      acao: () => document.querySelector<HTMLInputElement>("input[type='search']")?.focus(),
+      acao: () => {
+        setLeituraAmpliada(false);
+        setVista("lista");
+        requestAnimationFrame(() => document.querySelector<HTMLInputElement>("input[type='search']")?.focus());
+      },
     },
     { tecla: "?", descricao: "Mostrar atalhos", acao: () => setAjuda((atual) => !atual) },
-    { tecla: "Escape", descricao: "Fechar", acao: () => setAjuda(false) },
+    { tecla: "Escape", descricao: "Fechar", acao: () => { setAjuda(false); setLeituraAmpliada(false); } },
   ];
 
   // Desligado enquanto o compositor está aberto: lá as teclas são texto.
@@ -716,7 +723,7 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
     <div className="topo-seguro flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden">
       <NavegacaoProduto agendaHabilitada={agendaHabilitada} />
       <div className="flex min-h-0 flex-1 overflow-hidden">
-      <div className={`${vista === "pastas" ? "flex" : "hidden"} h-full md:flex`}>
+      <div className={somenteLeitura ? "hidden" : `${vista === "pastas" ? "flex" : "hidden"} h-full min-w-0 flex-1 xl:flex xl:flex-none`}>
         <ListaPastas
           caixa={caixa}
           pastas={pastas}
@@ -729,13 +736,14 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
             setVista("lista");
           }}
           onEscrever={() => setComposicao({ tipo: "novo" })}
+          onVoltar={() => setVista("lista")}
           onCriarPasta={criarPasta}
           onRenomearPasta={renomearPasta}
           onExcluirPasta={excluirPasta}
         />
       </div>
 
-      <div className={`${vista === "lista" ? "flex" : "hidden"} min-w-0 flex-1 md:flex md:flex-none`}>
+      <div className={somenteLeitura ? "hidden" : `${vista === "lista" ? "flex" : "hidden"} min-w-0 flex-1 ${vista === "pastas" ? "xl:flex" : "md:flex"} md:flex-none`}>
         <ListaMensagens
           mensagens={mensagens}
           selecionada={selecionada}
@@ -772,10 +780,11 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
           onLoteAdiar={(quando) => void adiar(selecionados, quando)}
           podeArquivar={pastaAtual !== "archive"}
           onAbrirPastas={() => setVista("pastas")}
+          onEscrever={() => setComposicao({ tipo: "novo" })}
         />
       </div>
 
-      <main className={`${vista === "leitura" ? "flex" : "hidden"} min-w-0 flex-1 flex-col md:flex`}>
+      <main className={`${vista === "leitura" ? "flex" : "hidden"} min-w-0 flex-1 flex-col ${vista === "pastas" ? "xl:flex" : "md:flex"}`}>
         {conexaoAvisos !== "online" && <div role="status" className="border-b px-6 py-2 text-sm text-[var(--color-texto-fraco)]">
           {conexaoAvisos === "conectando" ? "Conectando os avisos…" : "Avisos desconectados. Tentando reconectar…"}
           <button type="button" className="ml-3 underline" onClick={() => setTentativaAvisos((atual) => atual + 1)}>Reconectar agora</button>
@@ -796,6 +805,8 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
             mensagem={aberta}
             conversa={conversa}
             carregando={carregandoLeitura}
+            leituraAmpliada={somenteLeitura}
+            onAlternarAmpliacao={() => { setVista("leitura"); setLeituraAmpliada((atual) => !atual); }}
             emSpam={pastaAtual === "spam"}
             pastas={pastas}
             onLiberarImagens={() => selecionada && void abrir(selecionada, true)}
