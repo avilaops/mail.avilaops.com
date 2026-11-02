@@ -313,11 +313,13 @@ await (async () => {
         dados = parte ? JSON.parse(Buffer.from(parte, "base64url").toString("utf8")) : null;
       } catch { dados = null; }
       if (!dados || typeof dados.sub !== "string" || typeof dados.email !== "string" ||
+        (dados.aud !== undefined && dados.aud !== "mail") ||
         typeof dados.iat !== "number" || typeof dados.exp !== "number" || dados.exp <= Date.now() / 1000) {
         res.writeHead(401, { "content-type": "application/json" }); res.end(JSON.stringify({ autenticado: false })); return;
       }
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ autenticado: true, permitido: true, sessao: { sub: dados.sub, email: dados.email, nome: "Fixture" } }));
+      res.end(JSON.stringify({ autenticado: true, permitido: true,
+        sessao: { sub: dados.sub, email: dados.email, nome: "Fixture", iat: dados.iat, exp: dados.exp } }));
       return;
     }
     if (req.url === "/oauth/jwks") {
