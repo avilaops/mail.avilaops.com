@@ -9,6 +9,13 @@
 mail.avilaops.com {
 	encode zstd gzip
 
+	# Guia publico de configuracao Outlook / IMAP / SMTP.
+	handle /configurar-outlook* {
+		root * /var/www/avila-mail-outlook
+		rewrite * /index.html
+		file_server
+	}
+
 	# Desafio ACME do certbot para o certificado usado pelo SMTP.
 	handle_path /.well-known/acme-challenge/* {
 		root * /var/www/acme/.well-known/acme-challenge
@@ -53,19 +60,15 @@ mail.avilaops.com {
 # ---------------------------------------------------------------------------
 # MTA-STS: politica que instrui o remetente a exigir TLS ao entregar e-mail.
 #
-# Fica em `mode: none` DE PROPOSITO enquanto o MX de avilaops.com apontar para
-# a Porkbun (fwd1/fwd2.porkbun.com): uma politica `enforce` com `mx:
-# mail.avilaops.com` faria Gmail e Outlook RECUSAREM entrega em avilaops.com
-# por MX fora da lista. So trocar para `enforce` (e publicar o TXT
-# `_mta-sts.avilaops.com "v=STSv1; id=<data>"`) quando o MX vier para ca.
-# Para dominios de CLIENTE a politica e por dominio, no DNS deles — nao aqui.
+# O MX ja e mail.avilaops.com; a politica deve exigir TLS. Para dominios de
+# cliente, a politica continua sendo publicada no DNS de cada dominio.
 # ---------------------------------------------------------------------------
 
 mta-sts.avilaops.com {
 	handle /.well-known/mta-sts.txt {
 		header Content-Type "text/plain; charset=utf-8"
 		respond `version: STSv1
-mode: none
+mode: enforce
 mx: mail.avilaops.com
 max_age: 604800
 `
