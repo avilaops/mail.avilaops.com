@@ -12,7 +12,7 @@ import { localizarIp } from "../lib/geoip.js";
 import { descreverAparelho } from "../lib/userAgent.js";
 import { alertarAcessoNovo, alertarMudanca } from "./alertas.js";
 import { AuthError } from "./authError.js";
-import { conferirPoliticaSso, identidadeSso, type IdentidadeSso } from "./ssoContract.js";
+import { conferirPoliticaSso, identidadeOidc, identidadeSso, type IdentidadeSso } from "./ssoContract.js";
 import { conferirRevogacaoSso } from "./ssoRevocation.js";
 export { AuthError } from "./authError.js";
 import {
@@ -552,7 +552,7 @@ export async function refresh(input: {
 
     if (sessao.ssoToken) {
       const token = decryptSecret(sessao.ssoToken);
-      const identidade = identidadeSso(token);
+      const identidade = await identidadeSso(token);
       if (identidade.subject !== sessao.ssoSubject || identidade.email !== sessao.ssoEmail ||
           (sessao.mailbox.ownerEmail !== identidade.email && `${sessao.mailbox.localPart}@${sessao.mailbox.domain.name}` !== identidade.email)) {
         throw new AuthError("Esta caixa nao pertence mais a sua conta.", 403);
@@ -721,9 +721,9 @@ export async function cleanupExpired(): Promise<{ sessions: number; attempts: nu
 /**
  * Sessao emitida a partir do cookie `avila_sso`, sem senha da caixa.
  *
- * A prova de identidade e o JWT do auth server, verificado aqui com o
- * `SSO_JWT_SECRET` compartilhado. Quem entra e o dono: caixa cujo endereco e
- * o proprio e-mail da conta, ou caixa com `ownerEmail` igual a ele. Com mais
+ * A prova de identidade vem do endpoint de sessão do Auth. Quem entra e o
+ * dono: caixa cujo endereco e o proprio e-mail da conta, ou caixa com
+ * `ownerEmail` igual a ele. Com mais
  * de uma caixa e nenhum `address` pedido, devolve a lista para o webmail
  * mostrar o seletor.
  *
@@ -739,9 +739,23 @@ export async function loginSso(input: {
   ip?: string;
   userAgent?: string;
 }): Promise<SsoLoginResult> {
-  const identidade = identidadeSso(input.ssoToken);
+  const identidade = await identidadeSso(input.ssoToken);
+  return loginFederado(identidade, input.ssoToken, input, true);
+}
+
+export async function loginOidc(input: {
+  accessToken: string;
+  address?: string;
+  ip?: string;
+  userAgent?: string;
+}): Promise<SsoLoginResult> {
+  const identidade = await identidadeOidc(input.accessToken);
+  return loginFederado(identidade, input.accessToken, input, false);
+}
+
+async function loginFederado(identidade: IdentidadeSso, token: string, input: { address?: string; ip?: string; userAgent?: string }, conferirGate: boolean): Promise<SsoLoginResult> {
   await prisma.$transaction((tx) => conferirRevogacaoSso(tx, identidade.subject, identidade.issuedAt, identidade.email));
-  await conferirPoliticaSso(input.ssoToken);
+  if (conferirGate) await conferirPoliticaSso(token);
   const email = identidade.email;
 
   const parsed = parseAddress(email);
@@ -787,7 +801,7 @@ export async function loginSso(input: {
 
   await prisma.mailbox.update({ where: { id: escolhida.id }, data: { lastLoginAt: new Date() } });
   log.info("login via SSO", { mailboxId: escolhida.id, owner: email, ip: input.ip });
-  return emitirSessao(escolhida, { ip: input.ip, userAgent: input.userAgent, sso: { ...identidade, token: input.ssoToken } });
+  return emitirSessao(escolhida, { ip: input.ip, userAgent: input.userAgent, sso: { ...identidade, token } });
 }
 
 

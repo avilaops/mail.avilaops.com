@@ -14,6 +14,7 @@ import {
   listSessions,
   firstPassword,
   login,
+  loginOidc,
   loginSso,
   logout,
   logoutAll,
@@ -83,6 +84,10 @@ const firstPasswordSchema = z.object({ newPassword: z.string().min(12).max(500) 
 
 const ssoSchema = z.object({
   ssoToken: z.string().min(20).max(8192),
+  address: z.string().min(3).optional(),
+});
+const oidcSchema = z.object({
+  accessToken: z.string().min(20).max(8192),
   address: z.string().min(3).optional(),
 });
 
@@ -490,7 +495,8 @@ export async function handleUserRoute(
     return true;
   }
 
-  // Login pelo SSO (auth.avilaops.com): o webmail repassa o cookie avila_sso.
+  // Login compatível pelo Auth: o webmail repassa o cookie avila_sso e a API
+  // consulta a sessão/autorização no emissor central.
   if (path === "/v1/auth/sso/events" && method === "POST") {
     const input = z.object({ securityEventToken: z.string().min(20).max(8192) }).parse(await readBody(req));
     json(res, 200, await receberSinalSso(input.securityEventToken));
@@ -506,6 +512,12 @@ export async function handleUserRoute(
   if (path === "/v1/auth/sso" && method === "POST") {
     const input = ssoSchema.parse(await readBody(req));
     json(res, 200, await loginSso({ ...input, ip: clientIp(req), userAgent: userAgent(req) }));
+    return true;
+  }
+
+  if (path === "/v1/auth/oidc" && method === "POST") {
+    const input = oidcSchema.parse(await readBody(req));
+    json(res, 200, await loginOidc({ ...input, ip: clientIp(req), userAgent: userAgent(req) }));
     return true;
   }
 

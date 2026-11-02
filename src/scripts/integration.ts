@@ -301,11 +301,25 @@ await (async () => {
   const chaves = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const publica = { ...chaves.publicKey.export({ format: "jwk" }), kid: "auth-contrato", alg: "RS256", use: "sig" };
   const segredo = "segredo-sso-exclusivo-do-teste-de-contrato";
-  const antigas = { segredo: process.env.SSO_JWT_SECRET, auth: process.env.MAIL_AUTH_URL };
-  process.env.SSO_JWT_SECRET = segredo;
+  const antigas = { auth: process.env.MAIL_AUTH_URL };
   let politica: "permitido" | "negado" | "mfa" | "indisponivel" = "permitido";
   let consultas = 0;
   const emissor = createServer((req, res) => {
+    if (req.url?.startsWith("/api/session")) {
+      const cookie = req.headers.cookie?.match(/(?:^|;\s*)avila_sso=([^;]+)/)?.[1];
+      let dados: Record<string, unknown> | null = null;
+      try {
+        const parte = cookie?.split(".")[1];
+        dados = parte ? JSON.parse(Buffer.from(parte, "base64url").toString("utf8")) : null;
+      } catch { dados = null; }
+      if (!dados || typeof dados.sub !== "string" || typeof dados.email !== "string" ||
+        typeof dados.iat !== "number" || typeof dados.exp !== "number" || dados.exp <= Date.now() / 1000) {
+        res.writeHead(401, { "content-type": "application/json" }); res.end(JSON.stringify({ autenticado: false })); return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ autenticado: true, permitido: true, sessao: { sub: dados.sub, email: dados.email, nome: "Fixture" } }));
+      return;
+    }
     if (req.url === "/oauth/jwks") {
       res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ keys: [publica] })); return;
     }
@@ -482,7 +496,7 @@ await (async () => {
     await new Promise<void>((resolve) => receptor.close(() => resolve()));
     emissor.closeAllConnections();
     await new Promise<void>((resolve) => emissor.close(() => resolve()));
-    for (const [chave, valor] of [["SSO_JWT_SECRET", antigas.segredo], ["MAIL_AUTH_URL", antigas.auth]] as const) {
+    for (const [chave, valor] of [["MAIL_AUTH_URL", antigas.auth]] as const) {
       if (valor === undefined) delete process.env[chave]; else process.env[chave] = valor;
     }
   }

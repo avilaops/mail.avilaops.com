@@ -50,19 +50,25 @@ A liberação da agenda usa `AGENDA_ENABLED=false|internal|all`. Desde 18/10/202
 
 ## Login pelo SSO (auth.avilaops.com)
 
-Desde 26/08/2026 a porta do webmail e o `auth.avilaops.com`: `/entrar` redireciona
-para `auth.avilaops.com/login?app=mail&returnTo=https://mail.avilaops.com/api/sessao/sso`.
-Na volta, o webmail repassa o cookie `avila_sso` para `POST /v1/auth/sso` da API,
-que verifica o JWT (`SSO_JWT_SECRET`, o mesmo do auth) e emite a sessao normal
-da caixa, sem senha.
+O caminho principal novo usa OIDC Authorization Code + PKCE: com
+`AUTH_CLIENT_ID` e `AUTH_CLIENT_SECRET` configurados, `/entrar` inicia o cliente
+registrado no Auth, valida state/nonce e troca o código no servidor. A API do Mail
+valida o access token no `/oauth/userinfo` do Auth e emite somente a sessão local
+da caixa. O callback registrado é
+`https://mail.avilaops.com/api/sessao/sso`.
+
+O caminho de compatibilidade que recebe `avila_sso` consulta o endpoint de sessão
+do Auth. O Mail não valida JWT, não guarda segredo compartilhado e não decide a
+política de acesso do emissor.
 
 Quem pode abrir o que: caixa cujo endereco e o e-mail da conta, ou caixa com
 `owner_email` igual a ele (`POST /v1/mailboxes` aceita `owner_email`;
 `POST /v1/mailboxes/owner` altera). Varias caixas → seletor em `/entrar/caixas`.
 
-`/entrar?local=1` mantem o login com a senha da caixa (IMAP/apps continuam na
-senha). Webmail precisa de `SSO_ENABLED=true` (unit do systemd); a API, de
-`SSO_JWT_SECRET` no `.env.production`.
+`/entrar?local=1` mantém o login com a senha da caixa (IMAP/apps continuam na
+senha). Webmail precisa de `SSO_ENABLED=true`, `AUTH_CLIENT_ID` e
+`AUTH_CLIENT_SECRET`; o cliente OIDC deve ter exatamente o callback acima e o
+post-logout `https://mail.avilaops.com/entrar?local=1`. O caminho legado também
 
 Caddy: so `/api/v1/*` vai para a API; o resto de `/api/*` e BFF do webmail.
 
