@@ -9,7 +9,7 @@
       "id": "MAIL-ENCERRAMENTO-20261101-03",
       "title": "Encerrar fluxos SSE no deploy sem interromper requisicoes comuns",
       "responsible": "nicolas",
-      "status": "em-revisao",
+      "status": "concluido",
       "acceptance": [
         "Reproduzir encerramento bloqueado com SSE ativo no standalone",
         "Fechar SSE e liberar conexoes na API ao receber SIGTERM ou SIGINT",
@@ -23,7 +23,14 @@
         "Teste ampliado reproduziu a segunda causa: mesmo apos cancelar SSE, requests curtos reutilizando o socket exigiram SIGKILL; resposta SSE agora solicita Connection close ao terminar",
         "Retomada em 2026-11-04: producao migrada para host dedicado webmail; API, MTA e webmail ativos; bundle publicado ainda usa Connection keep-alive",
         "Correcao de encerramento isolada da PR #16, que recebeu commits posteriores de autenticacao; novo checkout preserva o trabalho concorrente",
-        "Teste com reutilizacao HTTP aprovado no CI anterior 41510852703: SIGTERM 3314ms, SIGINT 3310ms; nova integracao com main exige seu proprio CI antes de publicar"
+        "Teste com reutilizacao HTTP aprovado no CI anterior 41510852703: SIGTERM 3314ms, SIGINT 3310ms; nova integracao com main exige seu proprio CI antes de publicar",
+        "PR #18 integrada: https://github.com/avilaops/mail.avilaops.com/pull/18; commit funcional e911df81d118f230e4fd3cc3a4a2ce05f82ac1fb",
+        "CI da PR 41907434464 aprovado: SIGTERM 3315ms, SIGINT 3314ms, rascunho em andamento concluido e proxy reutilizando conexao",
+        "Deploy 41908230359 aprovado apos corrigir DEPLOY_USER de root para o usuario existente gha-deploy; imagens aprovadas reaproveitadas, sem build no servidor",
+        "Host dedicado webmail: release.drDbrY publicada, bundle confirmado com Connection close; Node de producao v22.22.1",
+        "Prova em producao em 2026-11-04 20:48:28 UTC: SSE autenticado ativo e consultas HTTP paralelas; systemctl restart levou 0.064s, PID 124354 substituido por 124766, sem timeout nem SIGKILL; Next pronto no segundo seguinte",
+        "Next encerrou com codigo 143 esperado por SIGTERM; systemd registra exit-code para a parada anterior, mas o novo processo iniciou com Result success e ActiveState active",
+        "Caixa autenticada reconectou avisos sem reload; API, MTA e webmail ativos e HTTP publico 200; nenhuma mensagem real enviada"
       ]
     },
     {
