@@ -5,6 +5,7 @@ export interface IdentidadeSso {
   email: string;
   issuedAt: Date;
   expiresAt: Date;
+  apps?: string[];
 }
 
 export function authBase(): string {
@@ -23,13 +24,14 @@ export async function identidadeOidc(accessToken: string): Promise<IdentidadeSso
   } catch { throw new AuthError("Login unico temporariamente indisponivel. Tente novamente.", 503); }
   if (resposta.status === 401 || resposta.status === 403) throw new AuthError("Token OIDC recusado pelo Auth.", 401);
   if (!resposta.ok) throw new AuthError("Login unico temporariamente indisponivel. Tente novamente.", 503);
-  const dados = await resposta.json().catch(() => null) as { sub?: unknown; email?: unknown; email_verified?: unknown } | null;
+  const dados = await resposta.json().catch(() => null) as { sub?: unknown; email?: unknown; email_verified?: unknown; apps?: unknown } | null;
   if (!dados || typeof dados.sub !== "string" || !dados.sub || dados.sub.length > 200 ||
       typeof dados.email !== "string" || !dados.email || dados.email.length > 320 || dados.email_verified === false) {
     throw new AuthError("Resposta OIDC invalida.", 401);
   }
   const agora = new Date();
-  return { subject: dados.sub, email: dados.email.trim().toLowerCase(), issuedAt: agora, expiresAt: new Date(agora.getTime() + 55 * 60_000), token: accessToken };
+  const apps = Array.isArray(dados.apps) ? dados.apps.filter((app): app is string => typeof app === "string" && app.length <= 100) : undefined;
+  return { subject: dados.sub, email: dados.email.trim().toLowerCase(), issuedAt: agora, expiresAt: new Date(agora.getTime() + 55 * 60_000), apps, token: accessToken };
 }
 
 /** Consulta o cookie no Auth; o Mail não valida JWT nem guarda segredo do emissor. */

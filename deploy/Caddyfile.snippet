@@ -19,6 +19,16 @@ mail.avilaops.com {
 	# o Caddy so encerra o TLS e encaminha.
 	# So /api/v1/* e a API de provisionamento; /api/sessao, /api/mail e
 	# /api/cadastro sao rotas BFF do webmail (Next) e ficam no handle geral.
+	handle /.well-known/oauth-protected-resource {
+		reverse_proxy 127.0.0.1:3042
+	}
+
+	# MCP remoto do webmail. O endpoint valida o access token OIDC no Auth e
+	# resolve a caixa pelo ownerEmail ou pelo endereco informado na ferramenta.
+	handle /mcp {
+		reverse_proxy 127.0.0.1:3042
+	}
+
 	handle /api/v1/* {
 		uri strip_prefix /api
 		reverse_proxy 127.0.0.1:3042
