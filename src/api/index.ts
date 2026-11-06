@@ -23,6 +23,7 @@ import { MercadoPagoError, assinaturaValida } from "../lib/mercadopago.js";
 import { orcamentoDeHoje } from "../mta/warmup.js";
 import { estadoDaValidacaoInternaDaAgenda } from "../services/calendar-rollout.js";
 import { handleDav } from "../dav/server.js";
+import { handleMcp } from "./mcp.js";
 import {
   BillingError,
   cancelarAssinatura,
@@ -175,6 +176,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const method = req.method ?? "GET";
 
   liberarOrigem(req, res, path);
+
+  if (await handleMcp(req, res, path)) return;
 
   // O navegador pergunta antes de postar. Responder aqui, antes de qualquer
   // checagem de token, e o que permite a tela publica existir.

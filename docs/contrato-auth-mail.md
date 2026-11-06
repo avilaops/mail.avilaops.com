@@ -2,9 +2,9 @@
 
 ## Portas e validação
 
-O Mail conserva o protocolo existente: cookie HttpOnly `avila_sso`, HS256,
-emissor `auth.avilaops.com`, identidade `sub`, e-mail e datas `iat`/`exp`.
-Tokens OIDC de outra finalidade não são aceitos como esse cookie.
+O Mail conserva o ponto de entrada compatível: cookie HttpOnly `avila_sso`.
+O Auth é consultado em `/api/session?app=mail`; o Mail não valida JWT nem
+guarda segredo compartilhado do emissor.
 
 O Auth é a fonte da política de acesso e segundo fator. O servidor Mail consulta
 `/login?app=mail&returnTo=<callback do Mail>` com o cookie e sem seguir redirects.
@@ -77,7 +77,6 @@ de autorização de escopo. O módulo Auth não está concluído nem liberado pa
 
 Configuração da API Mail:
 
-- `SSO_JWT_SECRET`: segredo já compartilhado com o emissor. Não imprimir valores.
 - `MAIL_AUTH_URL`: base para consultar o gate e as chaves públicas; padrão
   `https://auth.avilaops.com`.
 - `WEBMAIL_URL`: URL pública do Mail, igual à usada pelo BFF; padrão
