@@ -67,10 +67,21 @@ export function PainelAgenda() {
     router.push(`/agenda?${query}`, { scroll: false });
   }, [router]);
 
-  useEffect(() => {
-    void obterPreferenciasAgenda().then(setPreferencias).catch((falha) => setErro(falha instanceof Error ? falha.message : "Não foi possível carregar as preferências da agenda."));
-    void listarAgendas().then((items) => { setAgendas(items); setAgendasVisiveis(new Set(items.map((item) => item.id))); }).catch((falha) => setErro(falha instanceof Error ? falha.message : "Não foi possível carregar as agendas."));
+  const carregarConfiguracao = useCallback(async () => {
+    setCarregando(true);
+    setErro(null);
+    try {
+      const [configuracao, items] = await Promise.all([obterPreferenciasAgenda(), listarAgendas()]);
+      setAgendas(items);
+      setAgendasVisiveis(new Set(items.map((item) => item.id)));
+      setPreferencias(configuracao);
+    } catch (falha) {
+      setErro(falha instanceof Error ? falha.message : "Não foi possível carregar a configuração da agenda.");
+      setCarregando(false);
+    }
   }, []);
+
+  useEffect(() => { void carregarConfiguracao(); }, [carregarConfiguracao]);
 
   useEffect(() => {
     if (parametros.get("novo") !== "mensagem") return;
@@ -302,12 +313,12 @@ export function PainelAgenda() {
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <LateralAgenda aberta={lateralAberta} data={data} visao={visao} primeiroDia={preferencias?.weekStart} somenteLeitura={!online} agendas={agendas} visiveis={agendasVisiveis} onVisibilidade={(id, visivel) => setAgendasVisiveis((atuais) => { const proximas = new Set(atuais); if (visivel) proximas.add(id); else proximas.delete(id); return proximas; })} onCriarAgenda={() => void novaAgenda().catch((falha) => setErro(falha instanceof Error ? falha.message : "Não foi possível criar a agenda."))} onEditarAgenda={(agenda) => void editarAgenda(agenda).catch((falha) => setErro(falha instanceof Error ? falha.message : "Não foi possível editar a agenda."))} onExcluirAgenda={(agenda) => void removerAgenda(agenda).catch((falha) => setErro(falha instanceof Error ? falha.message : "Não foi possível excluir a agenda."))} onCriar={abrirCriacaoPadrao} onData={(dia) => atualizarUrl(dia, visao)} onVisao={(item) => atualizarUrl(data, item)} onFechar={() => setLateralAberta(false)} />
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="sticky top-0 z-20 flex min-h-14 items-center gap-1 border-b border-[var(--color-borda)] bg-[var(--color-fundo)]/95 px-2 backdrop-blur sm:min-h-16 sm:gap-2 sm:px-5">
+          <div className="sticky top-0 z-20 flex min-h-11 items-center gap-0.5 border-b border-[var(--color-borda)] bg-[var(--color-fundo)]/95 px-1 backdrop-blur sm:min-h-16 sm:gap-2 sm:px-5">
             <button onClick={() => setLateralAberta(true)} aria-label="Abrir navegação da agenda" className="grid min-h-11 min-w-11 place-items-center rounded-lg hover:bg-[var(--color-fundo-suave)] md:hidden">☰</button>
-            <button onClick={() => atualizarUrl(new Date(), visao)} className="rounded-md border border-[var(--color-borda)] px-3 py-1.5 text-sm font-medium hover:bg-[var(--color-fundo-suave)]">Hoje</button>
+            <button onClick={() => atualizarUrl(new Date(), visao)} className="min-h-11 rounded-md px-2 text-sm font-medium hover:bg-[var(--color-fundo-suave)] sm:min-h-0 sm:border sm:border-[var(--color-borda)] sm:px-3 sm:py-1.5">Hoje</button>
             <div className="flex">
-              <button onClick={() => atualizarUrl(navegarData(data, visao, -1), visao)} aria-label="Período anterior" className="rounded-l-md p-2 hover:bg-[var(--color-fundo-suave)]">←</button>
-              <button onClick={() => atualizarUrl(navegarData(data, visao, 1), visao)} aria-label="Próximo período" className="rounded-r-md p-2 hover:bg-[var(--color-fundo-suave)]">→</button>
+              <button onClick={() => atualizarUrl(navegarData(data, visao, -1), visao)} aria-label="Período anterior" className="min-h-11 min-w-11 rounded-l-md hover:bg-[var(--color-fundo-suave)] sm:min-h-0 sm:min-w-0 sm:p-2">←</button>
+              <button onClick={() => atualizarUrl(navegarData(data, visao, 1), visao)} aria-label="Próximo período" className="min-h-11 min-w-11 rounded-r-md hover:bg-[var(--color-fundo-suave)] sm:min-h-0 sm:min-w-0 sm:p-2">→</button>
             </div>
             <h1 className="min-w-0 flex-1 truncate text-center text-sm font-semibold capitalize sm:text-left sm:text-base">
               <span className="sm:hidden">{rotuloCompactoAgenda(data, visao, preferencias?.weekStart)}</span>
@@ -331,11 +342,11 @@ export function PainelAgenda() {
               <VisaoMes data={data} eventos={eventosVisiveis} primeiroDia={preferencias?.weekStart} fuso={preferencias?.timezone} lembretePadrao={preferencias?.defaultReminder} lembreteDiaInteiroPadrao={preferencias?.defaultAllDayReminder} somenteLeitura={!online} onAlterar={solicitarAlteracaoHorario} onDia={(dia) => atualizarUrl(dia, "dia")} onEvento={setEventoAberto} onCriado={(evento) => setEventos((atuais) => [...atuais, evento])} onMaisOpcoes={(inicio, fim, titulo, diaInteiro) => { setInicioCriacao(inicio); setRascunhoCriacao({ fim, titulo, diaInteiro }); setEventoEditando(null); setEditorAberto(true); }} />
             </div>
           ) : visao === "lista" && !erro && (!carregando || eventos.length > 0) ? (
-            <div className={`${classeConteudoAgenda(visao)} pb-20 md:pb-0`}><VisaoLista inicio={janela.inicio} eventos={eventosVisiveis} fuso={preferencias?.timezone} onEvento={setEventoAberto} /></div>
+            <div className={`${classeConteudoAgenda(visao)} pb-20 md:pb-0`}><VisaoLista inicio={janelaCivil.inicio} eventos={eventos} fuso={preferencias?.timezone} agendasVisiveis={agendasVisiveis} online={online} onEvento={setEventoAberto} /></div>
           ) : <div className={`${classeConteudoAgenda(visao)} mx-auto w-full max-w-5xl px-4 py-8 pb-24 sm:px-8 sm:py-10 md:pb-10`}>
 
-          {erro ? <div role="alert" className="mb-6 border-l-2 border-[var(--color-perigo)] bg-[var(--color-fundo-suave)] px-4 py-3 text-sm"><p>{erro}</p><button onClick={() => void carregar()} className="mt-2 font-medium text-[var(--color-realce)] underline">Tentar de novo</button></div> : carregando ? (
-            <div aria-label="Carregando agenda" className="animate-pulse space-y-3"><div className="h-8 w-48 rounded bg-[var(--color-fundo-suave)]" /><div className="h-64 rounded-xl bg-[var(--color-fundo-suave)]" /></div>
+          {erro ? <div role="alert" className="mb-6 border-l-2 border-[var(--color-perigo)] bg-[var(--color-fundo-suave)] px-4 py-3 text-sm"><p>{erro}</p><button onClick={() => void (preferencias ? carregar() : carregarConfiguracao())} className="mt-2 min-h-11 font-medium text-[var(--color-realce)] underline">Tentar de novo</button></div> : carregando ? (
+            <div role="status" className="space-y-3"><p className="text-sm text-[var(--color-texto-fraco)]">Carregando agenda…</p><div aria-hidden="true" className="h-32 rounded-xl bg-[var(--color-fundo-suave)] motion-safe:animate-pulse" /></div>
           ) : eventosVisiveis.length === 0 ? (
             <section className="border-l-2 border-[var(--color-borda)] py-10 pl-6">
               <h2 className="text-lg font-medium">Nenhum compromisso {visao === "semana" ? "nesta semana" : "neste período"}</h2>
