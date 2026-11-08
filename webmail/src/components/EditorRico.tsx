@@ -109,7 +109,7 @@ export function EditorRico({ valorInicial, onMudar, focarNoTopo }: Props) {
   }
 
   const botao =
-    "h-7 min-w-7 rounded px-1.5 text-xs transition hover:bg-[var(--color-hover-suave)]";
+    "h-11 min-w-11 rounded px-1.5 text-sm transition hover:bg-[var(--color-hover-suave)] md:h-7 md:min-w-7 md:text-xs";
 
   return (
     <div className="flex min-h-52 flex-1 flex-col">
@@ -148,7 +148,7 @@ export function EditorRico({ valorInicial, onMudar, focarNoTopo }: Props) {
           🔗
         </button>
 
-        <span className="ml-auto pr-1 text-[10px] text-[var(--color-texto-fraco)]">
+        <span className="ml-auto hidden pr-1 text-[10px] text-[var(--color-texto-fraco)] md:inline">
           Ctrl+Enter envia
         </span>
       </div>
@@ -163,7 +163,7 @@ export function EditorRico({ valorInicial, onMudar, focarNoTopo }: Props) {
         onInput={() => onMudar(area.current?.innerHTML ?? "")}
         onKeyUp={sincronizarEstado}
         onMouseUp={sincronizarEstado}
-        className="rolagem-fina min-h-40 flex-1 overflow-y-auto px-4 py-3 text-sm leading-relaxed outline-none [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:border-[var(--color-borda)] [&_blockquote]:pl-3 [&_blockquote]:text-[var(--color-texto-fraco)] [&_a]:text-[var(--color-realce)] [&_a]:underline [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5"
+        className="rolagem-fina min-h-40 flex-1 overflow-y-auto px-4 py-3 text-base leading-relaxed wrap-anywhere outline-none md:text-sm [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:border-[var(--color-borda)] [&_blockquote]:pl-3 [&_blockquote]:text-[var(--color-texto-fraco)] [&_a]:text-[var(--color-realce)] [&_a]:underline [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5"
       />
     </div>
   );

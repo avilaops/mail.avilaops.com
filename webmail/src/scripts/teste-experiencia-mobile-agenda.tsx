@@ -4,6 +4,7 @@ import { EditorEvento } from "@/components/EditorEvento";
 import { EditorRecorrencia } from "@/components/EditorRecorrencia";
 import { GuiaConfiguracao } from "@/components/GuiaConfiguracao";
 import { NavegacaoVisoesAgenda } from "@/components/NavegacaoVisoesAgenda";
+import { VisaoLista } from "@/components/VisaoLista";
 import { classeConteudoAgenda, deveMostrarGradeAgenda, rotuloCompactoAgenda } from "@/lib/apresentacaoAgenda";
 
 let verificacoes = 0;
@@ -38,6 +39,10 @@ igual(editor.includes("overflow-x-hidden"), true, "o painel impede rolagem horiz
 igual(editor.includes("rodape-seguro"), true, "o rodapé respeita a área segura do aparelho");
 igual(editor.indexOf(">Título<") < editor.indexOf(">Agenda<"), true, "o título vem antes da agenda no fluxo principal");
 igual((editor.match(/max-w-full/g) ?? []).length >= 3, true, "o editor e as datas respeitam a largura móvel");
+igual((editor.match(/type="time"/g) ?? []).length, 2, "início e fim têm seletores de hora separados");
+
+const lista = renderToStaticMarkup(<VisaoLista inicio={new Date(2026, 9, 18)} eventos={[]} onEvento={() => undefined} />);
+igual(lista.includes("Ver próximos compromissos"), true, "é possível buscar mais eventos sem rolar a tela vazia");
 
 const recorrencia = renderToStaticMarkup(<EditorRecorrencia regra="" inicio={new Date(2026, 9, 18, 9)} onMudar={() => undefined} />);
 igual((recorrencia.match(/Não se repete/g) ?? []).length, 1, "a opção sem recorrência não é repetida");

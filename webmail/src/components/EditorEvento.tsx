@@ -7,6 +7,7 @@ import { dataCivil } from "@/lib/dataAgenda";
 import { intervaloDiaInteiro, intervaloValido, moverFimMantendoDuracao, proximoDiaCivil, tituloDoEvento } from "@/lib/editorAgenda";
 import type { AgendaCalendario, DadosEventoAgenda, EventoAgenda } from "@/lib/tipos";
 import { useFocoModal } from "@/lib/useFocoModal";
+import { useViewportMovel } from "@/lib/useViewportMovel";
 import { EditorRecorrencia } from "@/components/EditorRecorrencia";
 import { civilParaInstante, instanteParaCivil } from "@/lib/fusoAgenda";
 import type { EscopoRecorrencia } from "@/components/DialogoRecorrencia";
@@ -15,6 +16,26 @@ function valorLocal(data: Date): string {
   const hora = String(data.getHours()).padStart(2, "0");
   const minuto = String(data.getMinutes()).padStart(2, "0");
   return `${dataCivil(data)}T${hora}:${minuto}`;
+}
+
+function CampoDataHora({ rotulo, valor, minimo, diaInteiro, onMudar }: {
+  rotulo: string;
+  valor: string;
+  minimo?: string;
+  diaInteiro: boolean;
+  onMudar: (valor: string) => void;
+}) {
+  const [data, hora = ""] = valor.split("T");
+  const classe = "block min-h-11 w-full min-w-0 max-w-full rounded-lg border border-[var(--color-borda)] bg-[var(--color-fundo)] px-2 py-2 text-base outline-none focus:border-[var(--color-realce)] sm:px-3 [&::-webkit-date-and-time-value]:text-left";
+  return (
+    <fieldset className="min-w-0">
+      <legend className="mb-1.5 text-sm font-medium">{rotulo}</legend>
+      <div className={diaInteiro ? undefined : "grid min-w-0 grid-cols-[minmax(0,3fr)_minmax(0,2fr)] gap-2"}>
+        <input type="date" aria-label={`Data de ${rotulo.toLowerCase()}`} required min={minimo} value={data} onChange={(item) => onMudar(diaInteiro ? item.target.value : `${item.target.value}T${hora}`)} className={classe} />
+        {!diaInteiro && <input type="time" aria-label={`Hora de ${rotulo.toLowerCase()}`} required value={hora} onChange={(item) => onMudar(`${data}T${item.target.value}`)} className={classe} />}
+      </div>
+    </fieldset>
+  );
 }
 
 interface Props {
@@ -39,6 +60,7 @@ interface Props {
 export function EditorEvento({ data, fimInicial, tituloInicial, diaInteiroInicial, evento, onFechar, onSalvar, conflitoExterno = false, onConflitoResolvido, fusoPadrao, lembretePadrao = 10, lembreteDiaInteiroPadrao = 1440, escopo, agendas, descricaoInicial, convidadosSugeridos = [] }: Props) {
   const modal = useRef<HTMLElement>(null);
   useFocoModal(modal);
+  useViewportMovel(modal);
   const inicioPadrao = evento ? new Date(evento.inicio) : data;
   const fimPadrao = evento ? new Date(evento.fim) : (fimInicial ?? new Date(inicioPadrao.getTime() + 3_600_000));
   const fusoInicial = evento?.fuso ?? fusoPadrao ?? (Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Sao_Paulo");
@@ -79,8 +101,21 @@ export function EditorEvento({ data, fimInicial, tituloInicial, diaInteiroInicia
   });
 
   function mudarInicio(novoInicio: string) {
-    setFim(moverFimMantendoDuracao(inicio, fim, novoInicio));
+    if (!diaInteiro && intervaloValido(inicio, fim) && Number.isFinite(new Date(novoInicio).getTime())) {
+      setFim(moverFimMantendoDuracao(inicio, fim, novoInicio));
+    }
     setInicio(novoInicio);
+    setAlterado(true);
+  }
+
+  function mudarDiaInteiro(marcado: boolean) {
+    const dia = inicio.slice(0, 10) || dataCivil(inicioPadrao);
+    setInicio(marcado ? dia : `${dia}T09:00`);
+    setFim(marcado ? proximoDiaCivil(dia) : `${dia}T10:00`);
+    if (!evento && !lembretePersonalizado.current) {
+      setLembretes([marcado ? lembreteDiaInteiroPadrao : lembretePadrao]);
+    }
+    setDiaInteiro(marcado);
     setAlterado(true);
   }
 
@@ -124,20 +159,23 @@ export function EditorEvento({ data, fimInicial, tituloInicial, diaInteiroInicia
 
   return (
     <div role="presentation" onMouseDown={(item) => item.target === item.currentTarget && fechar()} className="fixed inset-0 z-50 overflow-hidden bg-black/40 md:flex md:justify-end">
-      <section ref={modal} role="dialog" aria-modal="true" aria-labelledby="titulo-editor-evento" className="ml-auto flex h-[100dvh] min-w-0 max-w-full flex-col overflow-hidden bg-[var(--color-superficie)] shadow-2xl md:max-w-xl md:border-l md:border-[var(--color-borda)]">
-        <header className="flex items-center justify-between border-b border-[var(--color-borda)] px-5 py-4">
+      <section ref={modal} role="dialog" aria-modal="true" aria-labelledby="titulo-editor-evento" className="topo-seguro relative top-[var(--topo-viewport-movel,0px)] ml-auto flex h-[var(--altura-viewport-movel,100dvh)] w-full min-w-0 max-w-full flex-col overflow-hidden bg-[var(--color-superficie)] shadow-2xl md:static md:h-dvh md:max-w-xl md:border-l md:border-[var(--color-borda)]">
+        <header className="flex shrink-0 items-center justify-between border-b border-[var(--color-borda)] px-4 py-1 sm:px-5 sm:py-3">
           <h2 id="titulo-editor-evento" className="text-lg font-semibold">{evento ? "Editar evento" : "Novo evento"}</h2>
-          <button type="button" onClick={fechar} aria-label="Fechar editor" className="rounded-md px-2 py-1 text-xl text-[var(--color-texto-fraco)] hover:bg-[var(--color-fundo-suave)]">×</button>
+          <button type="button" onClick={fechar} aria-label="Fechar editor" className="min-h-11 min-w-11 rounded-md text-xl text-[var(--color-texto-fraco)] hover:bg-[var(--color-fundo-suave)]">×</button>
         </header>
         <form onSubmit={(item) => { item.preventDefault(); void salvar(); }} className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-          <div className="rolagem-fina min-h-0 min-w-0 flex-1 space-y-5 overflow-x-hidden overflow-y-auto p-4 sm:p-5">
-            <label className="block text-sm font-medium">Título<input autoFocus maxLength={500} value={titulo} onChange={(item) => { setTitulo(item.target.value); setAlterado(true); }} className="mt-1.5 w-full rounded-lg border border-[var(--color-borda)] bg-[var(--color-fundo)] px-3 py-2.5 outline-none focus:border-[var(--color-realce)]" /></label>
+          <div className="rolagem-fina min-h-0 min-w-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto overscroll-contain p-4 max-md:[&_input:not([type=checkbox])]:text-base max-md:[&_select]:text-base max-md:[&_textarea]:text-base sm:p-5">
+            <label className="block text-sm font-medium">Título<input maxLength={500} value={titulo} onChange={(item) => { setTitulo(item.target.value); setAlterado(true); }} className="mt-1.5 w-full rounded-lg border border-[var(--color-borda)] bg-[var(--color-fundo)] px-3 py-2.5 outline-none focus:border-[var(--color-realce)]" /></label>
             <label className="block text-sm font-medium">Agenda<select required value={agendaId} onChange={(item) => { setAgendaId(item.target.value); setAlterado(true); }} className="mt-1.5 w-full rounded-lg border border-[var(--color-borda)] bg-[var(--color-fundo)] px-3 py-2">{agendas.map((agenda) => <option key={agenda.id} value={agenda.id}>{agenda.nome}</option>)}</select></label>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <label className="min-w-0 text-sm font-medium">Início<input required type={diaInteiro ? "date" : "datetime-local"} value={inicio} onChange={(item) => diaInteiro ? (setInicio(item.target.value), setAlterado(true)) : mudarInicio(item.target.value)} className="mt-1.5 block w-full min-w-0 max-w-full rounded-lg border border-[var(--color-borda)] bg-[var(--color-fundo)] px-3 py-2 outline-none focus:border-[var(--color-realce)]" /></label>
-              <label className="min-w-0 text-sm font-medium">Fim<input required type={diaInteiro ? "date" : "datetime-local"} min={diaInteiro ? proximoDiaCivil(inicio) : inicio} value={fim} onChange={(item) => { setFim(item.target.value); setAlterado(true); }} className="mt-1.5 block w-full min-w-0 max-w-full rounded-lg border border-[var(--color-borda)] bg-[var(--color-fundo)] px-3 py-2 outline-none focus:border-[var(--color-realce)]" /></label>
+            <div className="grid min-w-0 gap-3">
+              <CampoDataHora rotulo="Início" valor={inicio} diaInteiro={diaInteiro} onMudar={mudarInicio} />
+              <CampoDataHora rotulo="Fim" valor={fim} minimo={diaInteiro && inicio ? proximoDiaCivil(inicio) : inicio.slice(0, 10) || undefined} diaInteiro={diaInteiro} onMudar={(valor) => { setFim(valor); setAlterado(true); }} />
             </div>
-            <div className="flex flex-wrap items-center gap-4 text-sm"><label className="flex items-center gap-2"><input type="checkbox" checked={diaInteiro} onChange={(item) => { const marcado = item.target.checked; if (marcado) { const dia = inicio.slice(0, 10); setInicio(dia); setFim(proximoDiaCivil(dia)); } else { setInicio(`${inicio.slice(0, 10)}T09:00`); setFim(`${inicio.slice(0, 10)}T10:00`); } if (!evento && !lembretePersonalizado.current) setLembretes([marcado ? lembreteDiaInteiroPadrao : lembretePadrao]); setDiaInteiro(marcado); setAlterado(true); }} />Dia inteiro</label><button type="button" onClick={() => { setMostrarFuso((atual) => !atual); setDetalhesAbertos(true); }} className="text-[var(--color-realce)] hover:underline">Fuso horário</button></div>
+            <div className="flex flex-wrap items-center gap-x-4 text-sm">
+              <label className="flex min-h-11 items-center gap-2"><input type="checkbox" checked={diaInteiro} onChange={(item) => mudarDiaInteiro(item.target.checked)} />Dia inteiro</label>
+              <button type="button" onClick={() => { setMostrarFuso((atual) => !atual); setDetalhesAbertos(true); }} className="min-h-11 text-[var(--color-realce)] hover:underline">Fuso horário</button>
+            </div>
             <button type="button" aria-expanded={detalhesAbertos} onClick={() => setDetalhesAbertos((atual) => !atual)} className="flex min-h-11 w-full items-center justify-between rounded-lg border border-[var(--color-borda)] px-3 text-left text-sm font-medium hover:bg-[var(--color-fundo-suave)]"><span>{detalhesAbertos ? "Menos opções" : "Mais opções"}</span><span aria-hidden="true">{detalhesAbertos ? "−" : "+"}</span></button>
             {detalhesAbertos && <div className="min-w-0 space-y-5">
             {mostrarFuso && <label className="block text-sm font-medium">Fuso<input value={fuso} onChange={(item) => { setFuso(item.target.value); setAlterado(true); }} className="mt-1.5 w-full min-w-0 rounded-lg border border-[var(--color-borda)] bg-[var(--color-fundo)] px-3 py-2" /></label>}

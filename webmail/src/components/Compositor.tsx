@@ -6,6 +6,7 @@ import { CampoDestinatarios } from "@/components/CampoDestinatarios";
 import { enviarAnexo, formatarTamanho, type AnexoEnviado } from "@/lib/upload";
 import { EditorRico, htmlParaTextoSimples, textoParaHtml } from "@/components/EditorRico";
 import type { Anexo } from "@/lib/tipos";
+import { useViewportMovel } from "@/lib/useViewportMovel";
 
 /**
  * Janela de composicao.
@@ -68,11 +69,14 @@ const TITULOS: Record<ContextoComposicao["tipo"], string> = {
 };
 
 export function Compositor({ contexto, onFechar, onEnviado }: Props) {
+  const painel = useRef<HTMLElement>(null);
+  const seletorAnexos = useRef<HTMLInputElement>(null);
+  useViewportMovel(painel);
   const [ampliado, setAmpliado] = useState(false);
   const [para, setPara] = useState<string[]>(contexto.para ?? []);
   const [cc, setCc] = useState<string[]>(contexto.cc ?? []);
   const [cco, setCco] = useState<string[]>(contexto.cco ?? []);
-  const [mostrarCopias, setMostrarCopias] = useState((contexto.cc?.length ?? 0) > 0);
+  const [mostrarCopias, setMostrarCopias] = useState(Boolean(contexto.cc?.length || contexto.cco?.length));
 
   const [assunto, setAssunto] = useState(contexto.assunto ?? "");
   // O corpo vive como HTML. A citação chega em texto puro e é convertida uma
@@ -278,9 +282,33 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
     })),
     ...anexos.map((anexo) => ({ ...anexo, pronto: Boolean(anexo.enviado), remover: () => removerAnexo(anexo.chave) })),
   ];
+  const acoes = (
+    <>
+      <button
+        type="button"
+        onClick={() => void enviar()}
+        disabled={enviando || !prontosParaEnviar}
+        className="min-h-11 rounded-lg bg-[var(--color-forte)] px-4 text-sm font-medium text-[var(--color-sobre-forte)] transition hover:bg-[var(--color-forte-hover)] disabled:opacity-50 md:min-h-0 md:px-5 md:py-2"
+      >
+        {enviando ? "Enviando…" : "Enviar"}
+      </button>
+      <button
+        type="button"
+        onClick={() => seletorAnexos.current?.click()}
+        className="min-h-11 rounded-md border border-[var(--color-borda)] px-2.5 text-sm transition hover:bg-[var(--color-fundo-suave)] md:min-h-0 md:py-1.5 md:text-xs"
+      >
+        Anexar
+      </button>
+      <label className="flex min-h-11 cursor-pointer items-center gap-1.5 text-xs text-[var(--color-texto-fraco)] md:min-h-0">
+        <input type="checkbox" checked={comAssinatura} onChange={(evento) => setComAssinatura(evento.target.checked)} />
+        Assinatura
+      </label>
+    </>
+  );
 
   return (
     <section
+      ref={painel}
       role="dialog"
       aria-label={TITULOS[contexto.tipo]}
       onKeyDown={(evento) => {
@@ -294,11 +322,11 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
       }}
       // No celular ocupa a tela toda: painel ancorado de 340 px deixaria o
       // campo de texto com três linhas visíveis e o teclado cobrindo o resto.
-      className={`topo-seguro rolagem-fina fixed inset-0 z-30 flex flex-col overflow-y-auto border-[var(--color-borda)] bg-[var(--color-superficie)] [&>*]:shrink-0 md:border md:shadow-2xl ${ampliado
-        ? "md:inset-4 md:mx-auto md:w-[min(64rem,calc(100vw-2rem))] md:rounded-xl"
+      className={`topo-seguro fixed inset-x-0 top-[var(--topo-viewport-movel,0px)] z-30 flex h-[var(--altura-viewport-movel,100dvh)] min-w-0 flex-col overflow-hidden border-[var(--color-borda)] bg-[var(--color-superficie)] md:border md:shadow-2xl ${ampliado
+        ? "md:inset-4 md:mx-auto md:h-auto md:w-[min(64rem,calc(100vw-2rem))] md:rounded-xl"
         : "md:inset-auto md:bottom-0 md:right-6 md:h-[min(42rem,85dvh)] md:w-[min(42rem,calc(100vw-3rem))] md:rounded-t-xl"}`}
     >
-      <header className="flex items-center justify-between bg-[var(--color-forte)] px-4 py-2.5 text-[var(--color-sobre-forte)] md:rounded-t-xl">
+      <header className="flex shrink-0 items-center justify-between bg-[var(--color-forte)] px-4 text-[var(--color-sobre-forte)] md:rounded-t-xl md:py-2.5">
         <h2 className="text-sm font-medium">{TITULOS[contexto.tipo]}</h2>
         <div className="flex items-center gap-3">
           {estadoRascunho !== "parado" && (
@@ -318,135 +346,123 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
           <button
             onClick={onFechar}
             aria-label="Fechar"
-            className="rounded px-1.5 text-[var(--color-sobre-forte)]/70 transition hover:bg-[var(--color-sobre-forte)]/10 hover:text-[var(--color-sobre-forte)]"
+            className="min-h-11 min-w-11 rounded text-[var(--color-sobre-forte)]/70 transition hover:bg-[var(--color-sobre-forte)]/10 hover:text-[var(--color-sobre-forte)] md:min-h-0 md:min-w-0 md:px-1.5"
           >
             ×
           </button>
         </div>
       </header>
-
-      {enderecos.length > 1 && (
-        <div className="flex items-center gap-2 border-b border-[var(--color-borda)] px-4 py-2">
-          <span className="text-xs text-[var(--color-texto-fraco)]">De</span>
-          <select
-            value={remetente ?? ""}
-            onChange={(evento) => setRemetente(evento.target.value)}
-            className="flex-1 bg-transparent py-1 text-sm outline-none"
-          >
-            {enderecos.map((endereco) => (
-              <option key={endereco.address} value={endereco.address}>
-                {endereco.address}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      <CampoDestinatarios rotulo="Para" valores={para} onMudar={setPara} autoFocus={contexto.tipo === "novo" || contexto.tipo === "encaminhamento"} />
-
-      {mostrarCopias ? (
-        <>
-          <CampoDestinatarios rotulo="Cc" valores={cc} onMudar={setCc} />
-          <CampoDestinatarios rotulo="Cco" valores={cco} onMudar={setCco} />
-        </>
-      ) : (
-        <div className="border-b border-[var(--color-borda)] px-4 py-1.5">
-          <button
-            onClick={() => setMostrarCopias(true)}
-            className="text-xs text-[var(--color-texto-fraco)] underline underline-offset-2 transition hover:text-[var(--color-tinta)]"
-          >
-            Cc / Cco
-          </button>
-        </div>
-      )}
-
-      <div className="border-b border-[var(--color-borda)] px-4 py-2">
-        <input
-          type="text"
-          value={assunto}
-          onChange={(evento) => setAssunto(evento.target.value)}
-          placeholder={contexto.tipo === "resposta" ? "(mantém o assunto original)" : "Assunto"}
-          className="w-full bg-transparent py-1 text-sm outline-none"
-        />
-      </div>
-
-      <EditorRico
-        valorInicial={corpo}
-        onMudar={setCorpo}
-        focarNoTopo={contexto.tipo === "resposta" || contexto.tipo === "encaminhamento"}
-      />
-
-      {anexosVisiveis.length > 0 && (
-        <section aria-label="Anexos para enviar" className="shrink-0 border-t border-[var(--color-borda)]">
-          <p className="px-4 pt-2 text-xs font-medium">{anexosVisiveis.length} anexo{anexosVisiveis.length > 1 ? "s" : ""}</p>
-          <ul className="rolagem-fina max-h-32 overflow-y-auto overscroll-contain px-4 py-2">
-            {anexosVisiveis.map((anexo) => (
-              <li key={anexo.chave} className="flex items-center gap-2 py-1">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-2">
-                    <span title={anexo.nome} className="truncate text-xs font-medium">{anexo.nome}</span>
-                    <span className="shrink-0 text-[11px] text-[var(--color-texto-fraco)]">
-                      {formatarTamanho(anexo.tamanho)}
-                    </span>
-                  </div>
-
-                  {anexo.erro ? (
-                    <p className="text-[11px] text-[var(--color-perigo)]">{anexo.erro}</p>
-                  ) : (
-                    !anexo.pronto && (
-                      <div className="mt-1 h-0.5 overflow-hidden rounded-full bg-[var(--color-borda)]">
-                        <div
-                          className="h-full bg-[var(--color-realce)] transition-[width]"
-                          style={{ width: `${anexo.progresso}%` }}
-                        />
-                      </div>
-                    )
-                  )}
-                </div>
-
-                <button
-                  onClick={anexo.remover}
-                  disabled={enviando}
-                  aria-label={`Remover ${anexo.nome}`}
-                  className="shrink-0 rounded px-1.5 text-xs text-[var(--color-texto-fraco)] transition hover:text-[var(--color-perigo)]"
-                >
-                  ×
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
+      <div className="flex shrink-0 items-center gap-2 border-b border-[var(--color-borda)] px-4 py-1.5 md:hidden">{acoes}</div>
+      <input ref={seletorAnexos} type="file" multiple hidden onChange={(evento) => {
+        anexar(evento.target.files);
+        evento.target.value = "";
+      }} />
       {erro && (
-        <p role="alert" className="border-t border-red-200 bg-red-50 px-4 py-2 text-xs text-[var(--color-perigo)]">
+        <p role="alert" className="shrink-0 border-b border-red-200 bg-red-50 px-4 py-2 text-xs text-[var(--color-perigo)]">
           {erro}
         </p>
       )}
 
-      <footer className="flex items-center gap-3 border-t border-[var(--color-borda)] px-4 py-2.5">
-        <button
-          onClick={() => void enviar()}
-          disabled={enviando || !prontosParaEnviar}
-          className="rounded-lg bg-[var(--color-forte)] px-5 py-2 text-sm font-medium text-[var(--color-sobre-forte)] transition hover:bg-[var(--color-forte-hover)] disabled:opacity-50"
-        >
-          {enviando ? "Enviando…" : "Enviar"}
-        </button>
+      <div className="rolagem-fina flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom,0px)] [&>*]:shrink-0 md:pb-0">
+        {enderecos.length > 1 && (
+          <div className="flex items-center gap-2 border-b border-[var(--color-borda)] px-4 py-2">
+            <span className="text-xs text-[var(--color-texto-fraco)]">De</span>
+            <select
+              value={remetente ?? ""}
+              onChange={(evento) => setRemetente(evento.target.value)}
+              aria-label="De"
+              className="min-w-0 flex-1 truncate bg-transparent py-1 text-base outline-none md:text-sm"
+            >
+              {enderecos.map((endereco) => (
+                <option key={endereco.address} value={endereco.address}>
+                  {endereco.address}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
-        <label className="cursor-pointer rounded-md border border-[var(--color-borda)] px-2.5 py-1.5 text-xs transition hover:bg-[var(--color-fundo-suave)]">
-          Anexar
-          <input type="file" multiple className="hidden" onChange={(evento) => anexar(evento.target.files)} />
-        </label>
+        <div className="relative">
+          <div className={mostrarCopias ? undefined : "pr-20 md:pr-0"}>
+            <CampoDestinatarios rotulo="Para" valores={para} onMudar={setPara} autoFocus={contexto.tipo === "novo" || contexto.tipo === "encaminhamento"} />
+          </div>
+          {!mostrarCopias && <button
+            type="button"
+            onClick={() => setMostrarCopias(true)}
+            className="absolute right-2 top-0 min-h-11 px-2 text-xs text-[var(--color-texto-fraco)] underline underline-offset-2 md:static md:min-h-0 md:px-4 md:py-1.5"
+          >
+            Cc / Cco
+          </button>}
+        </div>
 
-        <label className="flex cursor-pointer items-center gap-1.5 text-xs text-[var(--color-texto-fraco)]">
+        {mostrarCopias && (
+          <>
+            <CampoDestinatarios rotulo="Cc" valores={cc} onMudar={setCc} />
+            <CampoDestinatarios rotulo="Cco" valores={cco} onMudar={setCco} />
+          </>
+        )}
+
+        <div className="border-b border-[var(--color-borda)] px-4 py-2">
           <input
-            type="checkbox"
-            checked={comAssinatura}
-            onChange={(evento) => setComAssinatura(evento.target.checked)}
+            type="text"
+            value={assunto}
+            onChange={(evento) => setAssunto(evento.target.value)}
+            placeholder={contexto.tipo === "resposta" ? "(mantém o assunto original)" : "Assunto"}
+            aria-label="Assunto"
+            className="w-full bg-transparent py-1 text-base outline-none md:text-sm"
           />
-          Assinatura
-        </label>
-      </footer>
+        </div>
+
+        <EditorRico
+          valorInicial={corpo}
+          onMudar={setCorpo}
+          focarNoTopo={contexto.tipo === "resposta" || contexto.tipo === "encaminhamento"}
+        />
+
+        {anexosVisiveis.length > 0 && (
+          <section aria-label="Anexos para enviar" className="shrink-0 border-t border-[var(--color-borda)]">
+            <p className="px-4 pt-2 text-xs font-medium">{anexosVisiveis.length} anexo{anexosVisiveis.length > 1 ? "s" : ""}</p>
+            <ul className="rolagem-fina max-h-32 overflow-y-auto overscroll-contain px-4 py-2">
+              {anexosVisiveis.map((anexo) => (
+                <li key={anexo.chave} className="flex items-center gap-2 py-1">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-2">
+                      <span title={anexo.nome} className="truncate text-xs font-medium">{anexo.nome}</span>
+                      <span className="shrink-0 text-[11px] text-[var(--color-texto-fraco)]">
+                        {formatarTamanho(anexo.tamanho)}
+                      </span>
+                    </div>
+
+                    {anexo.erro ? (
+                      <p className="text-[11px] text-[var(--color-perigo)]">{anexo.erro}</p>
+                    ) : (
+                      !anexo.pronto && (
+                        <div className="mt-1 h-0.5 overflow-hidden rounded-full bg-[var(--color-borda)]">
+                          <div
+                            className="h-full bg-[var(--color-realce)] transition-[width]"
+                            style={{ width: `${anexo.progresso}%` }}
+                          />
+                        </div>
+                      )
+                    )}
+                  </div>
+
+                  <button
+                    onClick={anexo.remover}
+                    disabled={enviando}
+                    aria-label={`Remover ${anexo.nome}`}
+                    className="shrink-0 rounded px-1.5 text-xs text-[var(--color-texto-fraco)] transition hover:text-[var(--color-perigo)]"
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+      </div>
+      <footer className="hidden shrink-0 items-center gap-3 border-t border-[var(--color-borda)] px-4 py-2.5 md:flex">{acoes}</footer>
     </section>
   );
 }

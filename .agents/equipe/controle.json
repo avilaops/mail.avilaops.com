@@ -6,6 +6,22 @@
   ],
   "tasks": [
     {
+      "id": "MAIL-MOBILE-20261108-01",
+      "title": "Ajustar composicao de e-mail e Agenda para telas moveis",
+      "responsible": "nicolas",
+      "status": "em-revisao",
+      "acceptance": [
+        "Manter Enviar e Anexar acessiveis com o teclado aberto",
+        "Manter seletores de data e hora dentro da largura do editor",
+        "Exibir estados de carregamento, erro e periodo vazio na Agenda"
+      ],
+      "evidence": [
+        "Suite da Agenda, typecheck e build locais aprovados",
+        "Lint local sem erros, com sete avisos preexistentes",
+        "Validacao em iPhone fisico pendente"
+      ]
+    },
+    {
       "id": "MAIL-ENCERRAMENTO-20261101-03",
       "title": "Encerrar fluxos SSE no deploy sem interromper requisicoes comuns",
       "responsible": "nicolas",

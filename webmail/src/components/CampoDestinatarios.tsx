@@ -98,16 +98,16 @@ export function CampoDestinatarios({ rotulo, valores, onMudar, autoFocus }: Prop
   }
 
   return (
-    <div className="relative flex items-start gap-2 border-b border-[var(--color-borda)] px-4 py-2">
+    <div className="relative flex min-w-0 items-start gap-2 border-b border-[var(--color-borda)] px-4 py-2">
       <span className="shrink-0 pt-1.5 text-xs text-[var(--color-texto-fraco)]">{rotulo}</span>
 
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
         {valores.map((endereco) => (
           <span
             key={endereco}
-            className="flex items-center gap-1 rounded bg-[var(--color-fundo-suave)] py-0.5 pl-2 pr-1 text-xs"
+            className="flex min-w-0 max-w-full items-center gap-1 rounded bg-[var(--color-fundo-suave)] py-0.5 pl-2 pr-1 text-xs"
           >
-            {endereco}
+            <span className="truncate" title={endereco}>{endereco}</span>
             <button
               type="button"
               onClick={() => onMudar(valores.filter((item) => item !== endereco))}
@@ -121,6 +121,9 @@ export function CampoDestinatarios({ rotulo, valores, onMudar, autoFocus }: Prop
 
         <input
           type="text"
+          inputMode="email"
+          autoCapitalize="none"
+          aria-label={rotulo}
           value={rascunho}
           autoFocus={autoFocus}
           onChange={(evento) => setRascunho(evento.target.value)}
@@ -134,7 +137,7 @@ export function CampoDestinatarios({ rotulo, valores, onMudar, autoFocus }: Prop
           aria-expanded={aberto}
           aria-controls={idLista}
           aria-autocomplete="list"
-          className="min-w-[12rem] flex-1 bg-transparent py-1 text-sm outline-none"
+          className="min-w-0 flex-[1_1_10rem] bg-transparent py-1 text-base outline-none md:text-sm"
         />
       </div>
 
@@ -142,7 +145,7 @@ export function CampoDestinatarios({ rotulo, valores, onMudar, autoFocus }: Prop
         <ul
           id={idLista}
           role="listbox"
-          className="absolute left-16 top-full z-20 mt-1 w-80 overflow-hidden rounded-lg border border-[var(--color-borda)] bg-[var(--color-superficie)] shadow-lg"
+          className="absolute inset-x-4 top-full z-20 mt-1 max-w-80 overflow-hidden rounded-lg border border-[var(--color-borda)] bg-[var(--color-superficie)] shadow-lg md:left-16"
         >
           {sugestoes.map((contato, indice) => (
             <li key={contato.address}>
@@ -161,7 +164,7 @@ export function CampoDestinatarios({ rotulo, valores, onMudar, autoFocus }: Prop
                 }`}
               >
                 {contato.name && <span className="font-medium">{contato.name} </span>}
-                <span className="text-[var(--color-texto-fraco)]">{contato.address}</span>
+                <span className="break-all text-[var(--color-texto-fraco)]">{contato.address}</span>
               </button>
             </li>
           ))}
