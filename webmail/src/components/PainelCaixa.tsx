@@ -6,6 +6,7 @@ import { api } from "@/lib/cliente";
 import { atualizarTituloDaAba, avisarSistema, definirCaixaAvisos } from "@/lib/notificacoes";
 import { ListaPastas } from "@/components/ListaPastas";
 import { ListaMensagens, type Filtro } from "@/components/ListaMensagens";
+import { DivisoriaLista } from "@/components/DivisoriaLista";
 import { LeitorMensagem, type ResumoConversa } from "@/components/LeitorMensagem";
 import { Compositor, type ContextoComposicao } from "@/components/Compositor";
 import { NavegacaoProduto } from "@/components/NavegacaoProduto";
@@ -114,6 +115,9 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
   const [vista, setVista] = useState<Vista>("lista");
   const [leituraAmpliada, setLeituraAmpliada] = useState(false);
   const somenteLeitura = leituraAmpliada && vista === "leitura";
+  const layoutColunas = useRef<HTMLDivElement>(null);
+  const colunaLista = useRef<HTMLDivElement>(null);
+  const colunaLeitura = useRef<HTMLElement>(null);
   const avisoAberto = useRef<string | null>(null);
 
   const [composicao, setComposicao] = useState<ContextoComposicao | null>(null);
@@ -722,7 +726,7 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
   return (
     <div className="topo-seguro flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden">
       <NavegacaoProduto agendaHabilitada={agendaHabilitada} />
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div ref={layoutColunas} className="flex min-h-0 flex-1 overflow-hidden">
       <div className={somenteLeitura ? "hidden" : `${vista === "pastas" ? "flex" : "hidden"} h-full min-w-0 flex-1 xl:flex xl:flex-none`}>
         <ListaPastas
           caixa={caixa}
@@ -743,7 +747,7 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
         />
       </div>
 
-      <div className={somenteLeitura ? "hidden" : `${vista === "lista" ? "flex" : "hidden"} min-w-0 flex-1 ${vista === "pastas" ? "xl:flex" : "md:flex"} md:flex-none`}>
+      <div ref={colunaLista} id="mail-message-list" className={somenteLeitura ? "hidden" : `${vista === "lista" ? "flex" : "hidden"} min-w-0 flex-1 ${vista === "pastas" ? "xl:flex" : "md:flex"} md:flex-none md:w-[var(--mail-list-width,18rem)] xl:w-[var(--mail-list-width,20rem)] 2xl:w-[var(--mail-list-width,24rem)]`}>
         <ListaMensagens
           mensagens={mensagens}
           selecionada={selecionada}
@@ -784,7 +788,8 @@ export function PainelCaixa({ agendaHabilitada = true, mensagemInicial }: { agen
         />
       </div>
 
-      <main className={`${vista === "leitura" ? "flex" : "hidden"} min-w-0 flex-1 flex-col ${vista === "pastas" ? "xl:flex" : "md:flex"}`}>
+      <DivisoriaLista layout={layoutColunas} lista={colunaLista} leitura={colunaLeitura} className={somenteLeitura ? "hidden" : vista === "pastas" ? "hidden xl:block" : "hidden md:block"} />
+      <main ref={colunaLeitura} id="mail-reading-pane" className={`${vista === "leitura" ? "flex" : "hidden"} min-w-0 flex-1 flex-col ${vista === "pastas" ? "xl:flex" : "md:flex"}`}>
         {conexaoAvisos !== "online" && <div role="status" className="border-b px-6 py-2 text-sm text-[var(--color-texto-fraco)]">
           {conexaoAvisos === "conectando" ? "Conectando os avisos…" : "Avisos desconectados. Tentando reconectar…"}
           <button type="button" className="ml-3 underline" onClick={() => setTentativaAvisos((atual) => atual + 1)}>Reconectar agora</button>
