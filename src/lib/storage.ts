@@ -105,3 +105,20 @@ export async function ensureStorageDir(): Promise<void> {
   }
   await mkdir(config.storageDir, { recursive: true, mode: 0o750 });
 }
+
+/** MIME pendente de Email Worker. Este namespace nunca contem blobs de caixas. */
+export async function readPendingInbound(storageKey: string) {
+  if (!/^incoming\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.eml$/.test(storageKey)) {
+    throw new Error("Chave de entrada invalida.");
+  }
+  if (!r2) throw new Error("Recepcao Cloudflare requer armazenamento R2.");
+  const object = await r2.send(new GetObjectCommand({ Bucket: config.r2.bucket, Key: storageKey }));
+  if (!object.Body || !object.ContentLength || object.ContentLength > config.limits.maxMessageBytes) {
+    throw new Error("Mensagem pendente sem corpo ou maior que o limite.");
+  }
+  const raw = Buffer.from(await object.Body.transformToByteArray());
+  if (raw.byteLength !== object.ContentLength || raw.byteLength > config.limits.maxMessageBytes) {
+    throw new Error("Tamanho da mensagem pendente invalido.");
+  }
+  return { raw, metadata: object.Metadata ?? {} };
+}

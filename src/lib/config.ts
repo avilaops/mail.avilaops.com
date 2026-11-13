@@ -74,6 +74,7 @@ export const config = {
     port: int("MAIL_API_PORT", 3040),
     bind: optional("MAIL_API_BIND", "127.0.0.1"),
     token: optional("MAIL_API_TOKEN"),
+    inboundToken: optional("MAIL_INBOUND_TOKEN"),
   },
 
   relay: {

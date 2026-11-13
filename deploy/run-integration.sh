@@ -66,3 +66,4 @@ export NODE_EXTRA_CA_CERTS="$MAIL_TESTE_CERT"
 
 echo "==> Teste de integracao (com banco)"
 npx tsx src/scripts/integration.ts
+npx tsx src/scripts/inbound-cloudflare.integration.ts

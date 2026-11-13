@@ -4,7 +4,7 @@ import { prisma } from "../lib/db.js";
 import { parseAddress, stripSubaddress } from "../lib/address.js";
 import { storeRaw } from "../lib/storage.js";
 import { avisarEntrega } from "./eventos.js";
-import { getSystemFolder, type SystemFolderKind } from "../services/folders.js";
+import { getSystemFolder, SYSTEM_FOLDERS, type SystemFolderKind } from "../services/folders.js";
 import { maybeAutoReply } from "../services/autoreply.js";
 import { aplicarRegras } from "../services/rules.js";
 import { enviarAviso } from "../services/push.js";
@@ -16,6 +16,15 @@ import type { InboundAuthResult } from "./authcheck.js";
 import { aplicarRespostaRecebida } from "../services/calendar-replies.js";
 
 const log = createLogger("deliver-local");
+
+async function previousDelivery(mailboxId: string, deliveryId: string) {
+  const previous = await prisma.mailEvent.findUnique({ where: { id: deliveryId }, select: { mailboxId: true, payload: true } });
+  if (!previous) return null;
+  if (previous.mailboxId !== mailboxId) throw new Error("Identificador de entrega pertence a outra caixa.");
+  const payload = previous.payload as { messageId?: unknown; folder?: unknown };
+  if (typeof payload?.messageId !== "string") throw new Error("Recibo de entrega invalido.");
+  return { status: "delivered" as const, messageId: payload.messageId, folder: SYSTEM_FOLDERS.find(folder => folder.kind === payload.folder)?.kind ?? "inbox" };
+}
 
 export type DeliveryOutcome =
   | { status: "delivered"; messageId: string; folder: SystemFolderKind }
@@ -172,6 +181,8 @@ export async function deliverToMailbox(
   raw: Buffer,
   auth: InboundAuthResult | null,
   options: {
+    /** Identidade de uma entrega duravel; repeticao nao duplica mensagem/quota. */
+    deliveryId?: string;
     /** Somente chamadores internos atribuem avisos a copias de servico. */
     notificationKind?: "mensagem" | "seguranca";
     forceFolder?: SystemFolderKind;
@@ -186,6 +197,10 @@ export async function deliverToMailbox(
     flags?: { seen?: boolean; flagged?: boolean; answered?: boolean; draft?: boolean };
   } = {},
 ): Promise<DeliveryOutcome> {
+  if (options.deliveryId) {
+    const previous = await previousDelivery(target.mailboxId, options.deliveryId);
+    if (previous) return previous;
+  }
   if (target.status === "disabled") {
     return { status: "rejected", code: 550, reason: "5.2.1 Caixa desativada" };
   }
@@ -268,8 +283,11 @@ export async function deliverToMailbox(
   const uid = await proximoUid(folder.id);
 
   const message = await prisma.$transaction(async (tx) => {
+    // O recibo sobrevive a exclusao da mensagem pelo dono: retry nao ressuscita email.
+    if (options.deliveryId) await tx.mailEvent.create({ data: { id: options.deliveryId, mailboxId: target.mailboxId, type: "inbound.delivered", payload: { messageId: options.deliveryId, folder: folderKind } } });
     const created = await tx.message.create({
       data: {
+        ...(options.deliveryId ? { id: options.deliveryId } : {}),
         mailboxId: target.mailboxId,
         folderId: folder.id,
         rfcMessageId: parsed.messageId ?? null,
@@ -328,7 +346,14 @@ export async function deliverToMailbox(
     await tx.message.update({ where: { id: created.id }, data: { arrivalSeq: contador.messageEventSeq } });
 
     return created;
+  }, { timeout: 30_000 }).catch(async (error: unknown) => {
+    if (options.deliveryId && (error as { code?: string })?.code === "P2002") {
+      const previous = await previousDelivery(target.mailboxId, options.deliveryId);
+      if (previous) return { id: previous.messageId, duplicate: previous };
+    }
+    throw error;
   });
+  if ("duplicate" in message) return message.duplicate;
 
   // O e-mail sempre permanece na caixa. A automacao da agenda e adicional e
   // so aceita REPLY autenticado; falha nela nao transforma entrega em bounce.
