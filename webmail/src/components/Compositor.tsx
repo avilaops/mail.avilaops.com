@@ -71,6 +71,8 @@ const TITULOS: Record<ContextoComposicao["tipo"], string> = {
 export function Compositor({ contexto, onFechar, onEnviado }: Props) {
   const painel = useRef<HTMLElement>(null);
   const seletorAnexos = useRef<HTMLInputElement>(null);
+  const profundidadeArraste = useRef(0);
+  const [arrastandoArquivos, setArrastandoArquivos] = useState(false);
   useViewportMovel(painel);
   const [ampliado, setAmpliado] = useState(false);
   const [para, setPara] = useState<string[]>(contexto.para ?? []);
@@ -112,6 +114,34 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
         setRemetente(dados.addresses.find((item) => item.primary)?.address ?? null);
       })
       .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    // Impede que o navegador abra o arquivo e substitua o rascunho quando a
+    // queda acontece fora do painel. Texto e links continuam com uso nativo.
+    function protegerArraste(evento: DragEvent) {
+      if (evento.dataTransfer?.types.includes("Files")) evento.preventDefault();
+    }
+    function limparArraste() {
+      profundidadeArraste.current = 0;
+      setArrastandoArquivos(false);
+    }
+    function protegerQueda(evento: DragEvent) {
+      if (!evento.dataTransfer?.types.includes("Files")) return;
+      evento.preventDefault();
+      limparArraste();
+      if (!(evento.target instanceof Node) || !painel.current?.contains(evento.target)) {
+        setErro("Solte os arquivos dentro da janela da mensagem para anexar.");
+      }
+    }
+    window.addEventListener("dragover", protegerArraste, true);
+    window.addEventListener("drop", protegerQueda, true);
+    window.addEventListener("dragend", limparArraste);
+    return () => {
+      window.removeEventListener("dragover", protegerArraste, true);
+      window.removeEventListener("drop", protegerQueda, true);
+      window.removeEventListener("dragend", limparArraste);
+    };
   }, []);
 
 
@@ -176,7 +206,7 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
   }, [salvarRascunho]);
 
   function anexar(arquivos: FileList | null) {
-    if (!arquivos) return;
+    if (!arquivos || envioEmCurso.current) return;
 
     for (const arquivo of Array.from(arquivos)) {
       const chave = `${arquivo.name}-${arquivo.size}-${anexos.length}-${arquivo.lastModified}`;
@@ -295,6 +325,7 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
       <button
         type="button"
         onClick={() => seletorAnexos.current?.click()}
+        disabled={enviando}
         className="min-h-11 rounded-md border border-[var(--color-borda)] px-2.5 text-sm transition hover:bg-[var(--color-fundo-suave)] md:min-h-0 md:py-1.5 md:text-xs"
       >
         Anexar
@@ -311,6 +342,30 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
       ref={painel}
       role="dialog"
       aria-label={TITULOS[contexto.tipo]}
+      onDragEnterCapture={(evento) => {
+        if (!evento.dataTransfer.types.includes("Files")) return;
+        evento.preventDefault();
+        profundidadeArraste.current++;
+        if (!envioEmCurso.current) setArrastandoArquivos(true);
+      }}
+      onDragOverCapture={(evento) => {
+        if (!evento.dataTransfer.types.includes("Files")) return;
+        evento.preventDefault();
+        evento.dataTransfer.dropEffect = envioEmCurso.current ? "none" : "copy";
+      }}
+      onDragLeaveCapture={(evento) => {
+        if (!evento.dataTransfer.types.includes("Files")) return;
+        profundidadeArraste.current = Math.max(0, profundidadeArraste.current - 1);
+        if (profundidadeArraste.current === 0) setArrastandoArquivos(false);
+      }}
+      onDropCapture={(evento) => {
+        if (!evento.dataTransfer.types.includes("Files")) return;
+        evento.preventDefault();
+        evento.stopPropagation();
+        profundidadeArraste.current = 0;
+        setArrastandoArquivos(false);
+        anexar(evento.dataTransfer.files);
+      }}
       onKeyDown={(evento) => {
         // Ctrl+Enter envia — convenção de todo cliente de e-mail. Enter puro
         // não pode enviar: quebra de linha é o uso normal da tecla no corpo.
@@ -326,6 +381,11 @@ export function Compositor({ contexto, onFechar, onEnviado }: Props) {
         ? "md:inset-4 md:mx-auto md:h-auto md:w-[min(64rem,calc(100vw-2rem))] md:rounded-xl"
         : "md:inset-auto md:bottom-0 md:right-6 md:h-[min(42rem,85dvh)] md:w-[min(42rem,calc(100vw-3rem))] md:rounded-t-xl"}`}
     >
+      {arrastandoArquivos && (
+        <div role="status" className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-[inherit] border-2 border-dashed border-[var(--color-realce)] bg-[var(--color-superficie)]/95 p-6 text-center text-sm font-medium">
+          Solte os arquivos aqui para anexar à mensagem
+        </div>
+      )}
       <header className="flex shrink-0 items-center justify-between bg-[var(--color-forte)] px-4 text-[var(--color-sobre-forte)] md:rounded-t-xl md:py-2.5">
         <h2 className="text-sm font-medium">{TITULOS[contexto.tipo]}</h2>
         <div className="flex items-center gap-3">
