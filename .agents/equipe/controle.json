@@ -6,6 +6,26 @@
   ],
   "tasks": [
     {
+      "id": "MAIL-ANEXOS-ARRASTE-20261113-01",
+      "title": "Anexar arquivos arrastados sem abrir no navegador",
+      "responsible": "nicolas",
+      "status": "em-revisao",
+      "acceptance": [
+        "Soltar arquivos em qualquer area do compositor usa o upload de anexos existente",
+        "Soltar fora do compositor aberto preserva a pagina e o rascunho sem upload silencioso",
+        "Preservar arraste de texto, seletor de arquivos, progresso, erros e remocao",
+        "Validar em navegador com arquivos sinteticos sem enviar mensagens reais"
+      ],
+      "evidence": [
+        "RED Chromium: dragenter, dragover e drop nao cancelados pelo compositor anterior",
+        "GREEN Chromium 390px e 1440px: dois PDFs, bytes originais, upload unico, corpo preservado, queda fora, texto, remocao, erro e cleanup",
+        "Teste permanente integrado ao job session-browser existente; publicacao ainda nao verificada",
+        "Build e typecheck aprovados; lint zero erros e sete avisos preexistentes",
+        "Revisao independente sem bloqueio funcional ou de seguranca; corrida no teste reproduzida com upload lento e corrigida aguardando respostas por arquivo",
+        "PR22 isolada de main; preservado trabalho concorrente de layout e recuperacao R2"
+      ]
+    },
+    {
       "id": "MAIL-MOBILE-20261108-01",
       "title": "Ajustar composicao de e-mail e Agenda para telas moveis",
       "responsible": "nicolas",
