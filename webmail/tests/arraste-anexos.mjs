@@ -40,6 +40,8 @@ const backend = createServer(async (req, res) => {
   if (req.url === "/api/mail/me/drafts") resultado = { draftId: "rascunho-local", attachments: [] };
   if (req.url === "/api/mail/me/messages/send") throw new Error("Este teste nao envia mensagens");
   if (req.url === "/api/mail/me/attachments" && req.method === "POST") {
+    // Upload lento controlado: o botao Remover aparece antes de o XHR terminar.
+    await new Promise(resolve => setTimeout(resolve, 1000));
     uploads.push(input);
     status = falhar ? 413 : 201;
     resultado = falhar ? { erro: "Arquivo excede o limite de teste." }
@@ -78,10 +80,13 @@ try {
     const editor = dialog.getByRole("textbox", { name: "Corpo da mensagem" });
     await editor.waitFor();
     const antes = uploads.length;
+    const conclusoes = ["comprovante.pdf", "segunda-parcela.pdf"].map(nome => page.waitForResponse(resposta =>
+      resposta.url().endsWith("/api/mail/me/attachments") && resposta.request().method() === "POST"
+      && resposta.request().postDataJSON().filename === nome));
     const cancelados = await soltar(editor, ["comprovante.pdf", "segunda-parcela.pdf"]);
     assert.deepEqual(cancelados, [true, true, true], "queda de arquivo precisa impedir navegacao e insercao no editor");
     await dialog.getByRole("button", { name: "Remover segunda-parcela.pdf" }).waitFor();
-    await page.waitForFunction(() => !document.querySelector('button[aria-label="Remover comprovante.pdf"]')?.disabled);
+    for (const resposta of await Promise.all(conclusoes)) assert.equal(resposta.status(), 201);
     assert.equal(uploads.length, antes + 2, "um upload por arquivo");
     assert.deepEqual(uploads.slice(antes).map(item => item.filename).sort(), ["comprovante.pdf", "segunda-parcela.pdf"]);
     assert.equal(Buffer.from(uploads[antes].contentBase64, "base64").toString(), "%PDF-arquivo-sintetico");
@@ -95,10 +100,13 @@ try {
     await dialog.getByRole("button", { name: "Remover comprovante.pdf" }).click();
     assert.equal(await dialog.getByRole("button", { name: "Remover comprovante.pdf" }).count(), 0);
 
+    const conclusaoSeletor = page.waitForResponse(resposta => resposta.url().endsWith("/api/mail/me/attachments")
+      && resposta.request().method() === "POST" && resposta.request().postDataJSON().filename === "pelo-seletor.pdf");
     await dialog.locator('input[type="file"]').setInputFiles({
       name: "pelo-seletor.pdf", mimeType: "application/pdf", buffer: Buffer.from("seletor preservado"),
     });
     await dialog.getByRole("button", { name: "Remover pelo-seletor.pdf" }).waitFor();
+    assert.equal((await conclusaoSeletor).status(), 201);
     assert.equal(uploads.at(-1).filename, "pelo-seletor.pdf", "seletor continua usando o mesmo fluxo");
     await editor.evaluate(elemento => {
       // Dragover real nao expoe FileList (modo protegido); o tipo Files basta.
