@@ -12,7 +12,7 @@ mantem o objeto na fila e o cron repete a entrega. Nao enviar nem registrar o
 conteudo da mensagem em logs.
 
 A API usa um segredo exclusivo de ingresso e a mesma rotina de entrega do MTA.
-Um ID deterministico por objeto/caixa impede nova mensagem e nova quota quando
+Um ID deterministico por objeto impede nova mensagem e nova quota quando
 ha repeticao, inclusive concorrente. A API processa MIME, anexos, regras e
 autenticacao verificada da Cloudflare; a fila remove o objeto somente depois
 de confirmar a gravacao. Mensagens que nao podem ser entregues permanecem
