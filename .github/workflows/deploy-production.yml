@@ -25,6 +25,7 @@ jobs:
       - run: npm ci
       - run: npx prisma generate
       - run: npm run build
+      - run: npm run test:storage
       - run: npm test
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
