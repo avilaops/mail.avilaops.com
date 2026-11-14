@@ -67,6 +67,8 @@ jobs:
         working-directory: webmail
       - run: node tests/sessao.mjs
         working-directory: webmail
+      - run: npm run test:attachments-drag
+        working-directory: webmail
       - run: npm run test:shutdown
         working-directory: webmail
   api:
