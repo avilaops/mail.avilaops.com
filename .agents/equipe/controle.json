@@ -6,6 +6,29 @@
   ],
   "tasks": [
     {
+      "id": "MAIL-READER-20261113-01",
+      "title": "Ajustar largura da lista e melhorar a apresentacao da leitura",
+      "responsible": "nicolas",
+      "status": "em-revisao",
+      "acceptance": [
+        "Arrastar a divisoria ou usar o teclado para ajustar e salvar a largura da lista",
+        "Preservar espaco para leitura, ampliacao, pastas e tela cheia no celular",
+        "Exibir links comuns no texto e preservar estilos dos botoes do remetente",
+        "Melhorar tamanho dos controles e texto sem enfraquecer sandbox ou bloqueio de imagens",
+        "Publicar no Render e verificar login e leitura com dados sinteticos"
+      ],
+      "evidence": [
+        "RED Chromium: a divisoria acessivel nao existia; GREEN: arraste, recarga, teclado, limites, redefinicao e celular",
+        "Build de producao, typecheck e 112 verificacoes da Agenda aprovados; lint zero erros e sete avisos preexistentes",
+        "Suite real de sessao e anexos aprovada; links inline, botao original e sandbox conferidos no navegador",
+        "Revisao do diff preservou HTML do remetente, CSP, sandbox sem scripts e bloqueio de imagens remotas",
+        "UI 50ba67a publicada no deploy Render dep-dbrm07bm8hqs73d757n0; fonte da aplicacao identica em 0d8ca14",
+        "Producao mail.avilaops.com: navegador autenticado 1200x900 e 390x844 confirmou largura salva, links, isolamento e ausencia de overflow",
+        "Login por senha, SSO, MIME original e anexo R2 aprovados em producao; fixture removida, sem envio SMTP",
+        "PR23 para revisao; API preservada na branch recovery/render-r2-20261113; PR22 integrada com sincronizacao dos testes de upload"
+      ]
+    },
+    {
       "id": "MAIL-ANEXOS-ARRASTE-20261113-01",
       "title": "Anexar arquivos arrastados sem abrir no navegador",
       "responsible": "nicolas",

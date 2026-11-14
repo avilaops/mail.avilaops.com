@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { chromium } from "playwright";
 import { build } from "esbuild";
 import { responderAnexos, testarAnexos } from "./anexos.mjs";
+import { responderLayout, testarLayoutLeitura } from "./layout-leitura.mjs";
 
 // Somente GitHub CI: navegador e Next reais; a API controlada permite vencer
 // o acesso sem aguardar quinze minutos ou usar credenciais de produção.
@@ -55,6 +56,7 @@ const backend = createServer(async (req, res) => {
   }
   const acesso = req.headers.authorization?.replace(/^Bearer /, "");
   if ((acessos.get(acesso) ?? 0) <= Date.now()) return responder(401, { error: { message: "Acesso expirado" } });
+  if (responderLayout(req, responder)) return;
   if (await responderAnexos(req, res, input, responder)) return;
   if (req.url === "/v1/me/first-password" && req.method === "POST") {
     primeiraSenha = false;
@@ -183,6 +185,7 @@ try {
   await pagina.goto(`${base}/caixa`);
   assert.equal(new URL(pagina.url()).pathname, "/caixa", "reabrir caixa com refresh valido nao pede login");
   assert.equal((await pedir("/api/mail/me")).status, 200, "JSON renova acesso vencido");
+  await testarLayoutLeitura(pagina, base);
   await pagina.goto(`${base}/entrar?local=1`);
 
   for (const caminho of ["/api/mail/me", "/api/mail/me/messages/teste/raw", "/api/mail/me/events"]) {

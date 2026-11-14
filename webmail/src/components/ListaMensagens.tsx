@@ -138,7 +138,7 @@ export function ListaMensagens({
   const anexoAtivo = RECORTES_DE_ANEXO.find(([chave]) => chave === filtro)?.[1];
 
   return (
-    <section aria-label="Lista de mensagens" className="flex h-full w-full shrink-0 flex-col border-r border-[var(--color-borda)] md:w-72 xl:w-80 2xl:w-96">
+    <section aria-label="Lista de mensagens" className="flex h-full w-full shrink-0 flex-col border-r border-[var(--color-borda)]">
       <div className="flex items-center gap-2 border-b border-[var(--color-borda)] px-3 py-2.5">
         <button
           onClick={onAbrirPastas}

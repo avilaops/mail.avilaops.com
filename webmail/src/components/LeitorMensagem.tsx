@@ -100,16 +100,16 @@ function nomeDoArquivo(assunto: string | null): string {
 // precisam alinhar na mesma linha. Com altura vinda do padding, cada tipo de
 // elemento saia com um tamanho e a barra parecia desmontada.
 const acao =
-  "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-[var(--color-borda)] px-2.5 text-xs font-medium transition hover:bg-[var(--color-fundo-suave)]";
+  "inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-[var(--color-borda)] px-3 text-sm font-medium transition hover:bg-[var(--color-fundo-suave)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-realce)]";
 const acaoIcone =
-  "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[var(--color-borda)] text-sm transition hover:bg-[var(--color-fundo-suave)]";
+  "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-transparent text-base transition hover:bg-[var(--color-fundo-suave)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-realce)]";
 
 function Icone({ children }: { children: React.ReactNode }) {
   return (
     <svg
       aria-hidden
-      width="15"
-      height="15"
+      width="17"
+      height="17"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -237,7 +237,8 @@ export function LeitorMensagem({
     return `<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src http: https: data:; style-src 'unsafe-inline'; font-src data:">
 <style>
-  body{margin:0;padding:20px;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:14px;line-height:1.65;color:#1a1a1a;overflow-wrap:break-word}
+  body{margin:0;padding:28px 32px;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;font-size:15px;line-height:1.7;color:#20242c;background:#fff;overflow-wrap:break-word}
+  @media(max-width:480px){body{padding:20px 16px}}
   img{max-width:100%;height:auto}
   /* Tabela com largura natural, e nao espremida na largura do iframe. E-mail
      de marca (Facebook, newsletter) e montado com tabela aninhada de largura
@@ -252,15 +253,11 @@ export function LeitorMensagem({
   pre{white-space:pre-wrap}
   /* O iframe nao herda estilo da pagina: sem isto o link fica preto e nao
      parece clicavel, que era metade do problema original. */
-  /* CTAs de e-mails costumam depender de imagens ou de CSS externo. Como
-     ambos podem ser bloqueados, todo link precisa continuar reconhecível e
-     acionável mesmo quando o HTML original chega incompleto. */
-  a{display:inline-block;max-width:100%;box-sizing:border-box;margin:2px 0;padding:9px 16px;border-radius:7px;background:#2563eb;color:#fff!important;text-decoration:none;font-weight:650;line-height:1.35;overflow-wrap:anywhere;box-shadow:0 1px 2px rgba(15,23,42,.18)}
-  a:hover{background:#1d4ed8;color:#fff!important}
+  /* Links comuns continuam no fluxo do texto. Estilos próprios do remetente,
+     inclusive botões com cores de marca, têm precedência sobre este padrão. */
+  a{color:#1d4ed8;text-decoration:underline;text-underline-offset:2px;overflow-wrap:anywhere}
+  a:hover{text-decoration-thickness:2px}
   a:focus-visible{outline:3px solid #93c5fd;outline-offset:2px}
-  /* Link que envolve imagem nao vira botao: o botao desenhava uma moldura azul
-     em volta de cada foto e de cada logo da mensagem. */
-  a:has(img),a:has(img):hover{display:inline;margin:0;padding:0;border-radius:0;background:none;box-shadow:none;color:#2563eb!important;font-weight:inherit}
   /* Imagem bloqueada some em vez de deixar um retangulo vazio do tamanho que o
      remetente declarou. O aviso acima do corpo ja conta que ha imagens. */
   img[data-src]{display:none!important}
@@ -324,7 +321,7 @@ export function LeitorMensagem({
 
   return (
     <article className="rolagem-fina flex h-full min-h-0 min-w-0 flex-col overflow-y-auto">
-      <header className="shrink-0 border-b border-[var(--color-borda)] px-4 py-4 md:px-5">
+      <header className="shrink-0 border-b border-[var(--color-borda)] bg-[var(--color-superficie)] px-4 py-5 md:px-6">
         <div className="mb-3 flex items-start gap-3">
           <button
             onClick={onVoltar}
@@ -333,7 +330,7 @@ export function LeitorMensagem({
           >
             ←
           </button>
-          <h1 className="min-w-0 flex-1 text-base font-semibold leading-snug [overflow-wrap:anywhere] md:text-lg">
+          <h1 className="min-w-0 flex-1 text-lg font-semibold leading-snug tracking-tight [overflow-wrap:anywhere] md:text-xl">
             {mensagem.subject || "(sem assunto)"}
           </h1>
           {/* No celular a barra de acoes quebra em tres linhas e "Apagar" se
@@ -365,7 +362,7 @@ export function LeitorMensagem({
 
         {/* Uma linha so, tudo na mesma altura. O que se usa toda hora tem
             lugar fixo; mover, spam e baixar o original ficam no menu. */}
-        <div className="mb-3 flex flex-wrap items-center gap-1">
+        <div className="mb-5 flex flex-wrap items-center gap-1.5">
           <button
             onClick={() => onResponder(mensagem, false)}
             className={`${acao} border-transparent bg-[var(--color-forte)] text-[var(--color-sobre-forte)] hover:bg-[var(--color-forte-hover)]`}
@@ -464,7 +461,7 @@ export function LeitorMensagem({
               aria-pressed={leituraAmpliada}
               aria-label={leituraAmpliada ? "Restaurar colunas" : "Ampliar leitura"}
               title={leituraAmpliada ? "Restaurar colunas (Esc)" : "Ampliar leitura"}
-              className={`${acao} ml-auto hidden md:inline-flex`}
+              className={`${acao} ml-auto max-md:hidden`}
             >
               <Icone><path d={leituraAmpliada ? "M4 9h5V4m11 5h-5V4M4 15h5v5m11-5h-5v5" : "M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5"} /></Icone>
               {leituraAmpliada ? "Restaurar" : "Ampliar"}
@@ -473,7 +470,7 @@ export function LeitorMensagem({
         </div>
 
         {/* Duas linhas: quem e quando; depois de onde e para quem. */}
-        <div className="flex items-center gap-2 text-sm">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-sm">
           {/* `min-w-0` + `truncate`: endereço de e-mail é uma palavra só, sem
               ponto de quebra. Sem isso ele empurra a linha para fora da coluna
               — some no desktop largo e aparece quando a coluna aperta. */}
@@ -486,12 +483,12 @@ export function LeitorMensagem({
               verificado
             </span>
           )}
-          <span className="ml-auto shrink-0 text-xs text-[var(--color-texto-fraco)]">
+          <span className="ml-auto shrink-0 text-xs leading-5 text-[var(--color-texto-fraco)]">
             {formatarData(mensagem.receivedAt)}
           </span>
         </div>
 
-        <p className="mt-0.5 truncate text-xs text-[var(--color-texto-fraco)]">
+        <p className="mt-1.5 truncate text-xs leading-5 text-[var(--color-texto-fraco)]" title={`${mensagem.fromAddress} → ${mensagem.toAddresses.map((destino) => destino.address).join(", ")}`}>
           {mensagem.fromName && `${mensagem.fromAddress} · `}
           para {mensagem.toAddresses.map((destino) => destino.address).join(", ") || "—"}
           {mensagem.ccAddresses.length > 0 &&
@@ -511,7 +508,7 @@ export function LeitorMensagem({
             aria-expanded={historicoAberto}
             className="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left transition hover:bg-[var(--color-hover-suave)] md:px-6"
           >
-            <span className="text-[11px] font-medium uppercase tracking-wide text-[var(--color-texto-fraco)]">
+            <span className="text-xs font-medium text-[var(--color-texto-fraco)]">
               {conversa.count} mensagens nesta conversa
             </span>
             <span className="shrink-0 text-xs font-medium text-[var(--color-realce)]">
@@ -548,11 +545,11 @@ export function LeitorMensagem({
 
       {mensagem.blockedRemoteImages > 0 && !imagensLiberadas && (
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2.5 md:px-6">
-          <p className="text-xs text-[var(--color-atencao)]">
+          <p className="text-xs leading-5 text-[var(--color-atencao)]">
             {mensagem.blockedRemoteImages === 1
               ? "1 imagem externa foi bloqueada"
               : `${mensagem.blockedRemoteImages} imagens externas foram bloqueadas`}{" "}
-            — elas avisam o remetente que você abriu a mensagem.
+            — para proteger sua privacidade.
           </p>
           <button
             onClick={() => {
@@ -599,9 +596,8 @@ export function LeitorMensagem({
         </section>
       )}
 
-      {/* O corpo vai num cartao com margem: colado nas bordas, o branco do
-          e-mail virava um bloco solto no meio da interface escura. */}
-      <div className="min-h-48 flex-1 bg-[var(--color-fundo-suave)] p-2 md:p-4">
+      {/* A mensagem mantém fundo branco e ocupa a largura disponível. */}
+      <div className="min-h-48 flex-1 bg-[var(--color-fundo-suave)] p-1 md:p-3">
       <iframe
         // A chave forca o iframe a remontar ao trocar de mensagem: sem isso o
         // navegador reaproveita o documento anterior em alguns casos.
@@ -612,7 +608,7 @@ export function LeitorMensagem({
         // O corpo do e-mail é HTML de terceiro, escrito para fundo branco:
         // manter `bg-white` aqui é o que impede texto preto sobre preto quando
         // a interface está no tema escuro.
-        className="block h-full w-full rounded-lg border border-[var(--color-borda)] bg-white"
+        className="block h-full w-full rounded-md border border-[var(--color-borda)] bg-white"
       />
       </div>
 
