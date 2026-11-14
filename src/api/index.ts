@@ -3,6 +3,7 @@ import { SignupError, conferirDns, instrucoesDeDns } from "../services/publicSig
 import { estadoDoPedido, iniciarCheckout } from "../services/signupCheckout.js";
 import { z } from "zod";
 import { assertConfig, config } from "../lib/config.js";
+import { deliverCloudflareInbound } from "../services/inbound-cloudflare.js";
 import { createLogger } from "../lib/logger.js";
 import { disconnect, prisma } from "../lib/db.js";
 import { safeCompare } from "../lib/password.js";
@@ -196,6 +197,13 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (path === "/v1/health" && method === "GET") {
     await prisma.$queryRaw`SELECT 1`;
     return json(res, 200, { status: "ok", hostname: config.hostname, relayDriver: config.relay.driver });
+  }
+
+  if (path === "/v1/inbound/cloudflare" && method === "POST") {
+    const token = bearerToken(req);
+    if (!config.api.inboundToken || !token || !safeCompare(token, config.api.inboundToken)) return fail(res, 401, "Ingresso nao autorizado.");
+    const input = z.object({ storageKey: z.string().regex(/^incoming\/[a-f0-9-]{36}\.eml$/) }).strict().parse(await readBody(req));
+    return json(res, 200, await deliverCloudflareInbound(input.storageKey));
   }
 
   /**

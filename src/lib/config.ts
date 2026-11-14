@@ -47,6 +47,13 @@ function relayDriver(): RelayDriver {
 export const config = {
   hostname: optional("MAIL_HOSTNAME", "mail.avilaops.com"),
   storageDir: optional("MAIL_STORAGE_DIR", "/var/lib/avila-mail/blobs"),
+  storageDriver: optional("MAIL_STORAGE_DRIVER", "filesystem"),
+  r2: {
+    endpoint: optional("MAIL_R2_ENDPOINT"),
+    bucket: optional("MAIL_R2_BUCKET"),
+    accessKeyId: optional("MAIL_R2_ACCESS_KEY_ID"),
+    secretAccessKey: optional("MAIL_R2_SECRET_ACCESS_KEY"),
+  },
 
   ports: {
     inbound: int("MAIL_INBOUND_PORT", 25),
@@ -67,6 +74,7 @@ export const config = {
     port: int("MAIL_API_PORT", 3040),
     bind: optional("MAIL_API_BIND", "127.0.0.1"),
     token: optional("MAIL_API_TOKEN"),
+    inboundToken: optional("MAIL_INBOUND_TOKEN"),
   },
 
   relay: {
@@ -225,6 +233,16 @@ export const config = {
  */
 export function assertConfig(scope: "mta" | "api"): void {
   required("MAIL_DATABASE_URL");
+  if (!["filesystem", "r2"].includes(config.storageDriver)) {
+    throw new Error("MAIL_STORAGE_DRIVER deve ser filesystem ou r2.");
+  }
+  if (config.storageDriver === "r2") {
+    for (const name of ["MAIL_R2_ENDPOINT", "MAIL_R2_BUCKET", "MAIL_R2_ACCESS_KEY_ID", "MAIL_R2_SECRET_ACCESS_KEY"]) required(name);
+    const endpoint = new URL(config.r2.endpoint);
+    if (endpoint.protocol !== "https:" && !(process.env.NODE_ENV === "test" && endpoint.hostname === "127.0.0.1")) {
+      throw new Error("MAIL_R2_ENDPOINT deve usar HTTPS.");
+    }
+  }
 
   if (!config.dkim.encryptionKey || config.dkim.encryptionKey.length !== 64) {
     throw new Error(
