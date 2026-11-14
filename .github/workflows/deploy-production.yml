@@ -76,22 +76,24 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: avilaops/infra/.github/workflows/container.yml@5de9dd168d6db14764d9ca9a9338f72929652eb5
+    uses: avilaops/infra/.github/workflows/container.yml@7dd1ac2f99c014263abd8dca69bbf6379044511d
     with:
       context: .
       dockerfile: Dockerfile
       image-suffix: '-api'
+      image-repository: avilaops/mail.avilaops.com
       publish: ${{ github.event_name != 'pull_request' }}
   webmail:
     needs: [verify, session-browser]
     permissions:
       contents: read
       packages: write
-    uses: avilaops/infra/.github/workflows/container.yml@5de9dd168d6db14764d9ca9a9338f72929652eb5
+    uses: avilaops/infra/.github/workflows/container.yml@7dd1ac2f99c014263abd8dca69bbf6379044511d
     with:
       context: webmail
       dockerfile: webmail/Dockerfile
       image-suffix: '-webmail'
+      image-repository: avilaops/mail.avilaops.com
       publish: ${{ github.event_name != 'pull_request' }}
   deploy_api:
     needs: [api, webmail]
